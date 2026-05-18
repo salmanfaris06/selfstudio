@@ -35,3 +35,7 @@ coverage/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Local setup overrides
+setup-selfstudio-local.ps1
+setup-selfstudio-local.bat
