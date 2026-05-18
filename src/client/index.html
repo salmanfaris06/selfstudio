@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Selfstudio Camera Input Spike</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #101827;
+        color: #e5e7eb;
+      }
+      header {
+        padding: 24px;
+        border-bottom: 1px solid #263244;
+      }
+      main {
+        padding: 24px;
+      }
+      .section {
+        margin-bottom: 24px;
+      }
+      .section-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 12px;
+      }
+      .cards,
+      .actions {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+      }
+      .card,
+      .panel,
+      .action-card {
+        background: #172033;
+        border: 1px solid #2b3850;
+        border-radius: 12px;
+        padding: 18px;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+      }
+      .status {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: bold;
+        text-transform: uppercase;
+      }
+      .running,
+      .ok { background: #064e3b; color: #a7f3d0; }
+      .starting { background: #4a3414; color: #fde68a; }
+      .error { background: #5b1620; color: #fecdd3; }
+      .unsupported { background: #374151; color: #d1d5db; }
+      dl { margin: 16px 0 0; }
+      dt { color: #9ca3af; font-size: 12px; margin-top: 12px; }
+      dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+      ul { margin: 12px 0 0; padding-left: 18px; }
+      li { margin-top: 10px; overflow-wrap: anywhere; }
+      button {
+        border: 1px solid #3b4b66;
+        border-radius: 8px;
+        background: #22304a;
+        color: #e5e7eb;
+        cursor: pointer;
+        padding: 8px 12px;
+      }
+      button:hover { background: #2b3d5f; }
+      .error-text { color: #fca5a5; }
+      .muted { color: #9ca3af; }
+      .hint {
+        border-left: 3px solid #60a5fa;
+        color: #bfdbfe;
+        margin-top: 14px;
+        padding-left: 12px;
+      }
+      .result {
+        margin-top: 12px;
+        overflow-wrap: anywhere;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Selfstudio Input Monitor</h1>
+      <p class="muted">Local dashboard for USB camera visibility and JPG watcher status.</p>
+    </header>
+    <main>
+      <section class="section">
+        <div class="section-title">
+          <h2>USB Camera Detection</h2>
+          <button type="button" id="refresh-usb">Refresh USB Scan</button>
+        </div>
+        <div id="usb-panel" class="panel"></div>
+      </section>
+      <section class="section">
+        <div class="section-title">
+          <h2>Sony/PTP Diagnostic</h2>
+          <button type="button" id="refresh-ptp">Refresh Sony/PTP Diagnostic</button>
+        </div>
+        <div id="ptp-panel" class="panel"></div>
+        <section id="ptp-actions" class="actions" style="margin-top: 16px;"></section>
+        <pre id="native-feasibility" class="panel" style="margin-top: 16px; white-space: pre-wrap;"></pre>
+      </section>
+      <section class="section">
+        <div class="section-title">
+          <h2>gPhoto2 Helper</h2>
+          <button type="button" id="setup-gphoto">One-click Setup</button>
+          <button type="button" id="refresh-gphoto">Refresh gPhoto2 Diagnostic</button>
+        </div>
+        <pre id="gphoto-panel" class="panel" style="white-space: pre-wrap;"></pre>
+        <section id="gphoto-actions" class="actions" style="margin-top: 16px;"></section>
+      </section>
+      <section class="section">
+        <div class="section-title">
+          <h2>Direct Capture</h2>
+          <button type="button" id="refresh-capture">Refresh Capture Capability</button>
+        </div>
+        <div id="capture-panel" class="panel"></div>
+        <section id="capture-actions" class="actions" style="margin-top: 16px;"></section>
+      </section>
+      <section class="section">
+        <div class="section-title">
+          <h2>Import Latest Photo From Camera</h2>
+        </div>
+        <section id="import-actions" class="actions"></section>
+      </section>
+      <section class="section">
+        <div class="section-title">
+          <h2>Folder Watch Stations</h2>
+        </div>
+        <section id="cards" class="cards"></section>
+      </section>
+    </main>
+    <script>
+      const cards = document.getElementById('cards');
+      const usbPanel = document.getElementById('usb-panel');
+      const refreshUsbButton = document.getElementById('refresh-usb');
+      const importActions = document.getElementById('import-actions');
+      const ptpPanel = document.getElementById('ptp-panel');
+      const ptpActions = document.getElementById('ptp-actions');
+      const refreshPtpButton = document.getElementById('refresh-ptp');
+      const nativeFeasibility = document.getElementById('native-feasibility');
+      const gphotoPanel = document.getElementById('gphoto-panel');
+      const gphotoActions = document.getElementById('gphoto-actions');
+      const setupGphotoButton = document.getElementById('setup-gphoto');
+      const refreshGphotoButton = document.getElementById('refresh-gphoto');
+      const capturePanel = document.getElementById('capture-panel');
+      const captureActions = document.getElementById('capture-actions');
+      const refreshCaptureButton = document.getElementById('refresh-capture');
+      const importResults = new Map();
+      const importInFlightStations = new Set();
+      const captureResults = new Map();
+      const captureInFlightStations = new Set();
+      const ptpResults = new Map();
+      const gphotoResults = new Map();
+      const gphotoTriggerStations = new Set();
+      let captureCapabilityAvailable = false;
+      let captureRefreshInFlight = false;
+
+      function appendText(parent, text) {
+        parent.textContent = text ?? '-';
+        return parent;
+      }
+
+      function appendRow(list, label, value, className) {
+        const term = document.createElement('dt');
+        term.textContent = label;
+        const description = document.createElement('dd');
+        if (className) {
+          description.className = className;
+        }
+        appendText(description, value || '-');
+        list.append(term, description);
+      }
+
+      function ptpActionCard(station) {
+        const article = document.createElement('article');
+        article.className = 'action-card';
+
+        const title = document.createElement('h3');
+        title.textContent = station.label;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = `Try Sony/PTP Capture ${station.label}`;
+
+        const result = document.createElement('div');
+        result.className = ptpResults.get(station.id)?.className || 'result muted';
+        result.textContent = ptpResults.get(station.id)?.text || 'Safe diagnostic action: explains why native Sony/PTP backend is required.';
+
+        button.addEventListener('click', async () => {
+          try {
+            const response = await fetch('/api/sony-ptp/capture', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ stationId: station.id })
+            });
+            const data = await response.json();
+            const message = `${data.error} Next: ${(data.nextActions || []).join(' ')}`;
+            setPtpResult(station.id, response.ok ? 'result' : 'result error-text', message);
+          } catch (error) {
+            setPtpResult(station.id, 'result error-text', `Sony/PTP diagnostic failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          result.className = ptpResults.get(station.id).className;
+          result.textContent = ptpResults.get(station.id).text;
+        });
+
+        article.append(title, button, result);
+        return article;
+      }
+
+      function renderPtpDiagnostic(data) {
+        const status = document.createElement('span');
+        status.className = `status ${data.status || 'error'}`;
+        status.textContent = data.status || 'error';
+
+        const title = document.createElement('h3');
+        title.textContent = data.summary || 'Sony/PTP diagnostic unavailable';
+
+        const list = document.createElement('dl');
+        appendRow(list, 'Sony USB Detected', data.sonyUsbDetected ? 'Yes' : 'No');
+        appendRow(list, 'Sony WPD/PC Remote Detected', data.sonyWpdDetected ? 'Yes' : 'No');
+        appendRow(list, 'WIA Capture Available', data.wiaCaptureAvailable ? 'Yes' : 'No');
+        appendRow(list, 'Native PTP Backend Available', data.nativePtpBackendAvailable ? 'Yes' : 'No');
+        appendRow(list, 'Last Scan', data.scannedAt || '-');
+        if (data.error) {
+          appendRow(list, 'Error', data.error, 'error-text');
+        }
+
+        const hint = document.createElement('p');
+        hint.className = 'hint';
+        hint.textContent = Array.isArray(data.nextActions) ? data.nextActions.join(' ') : '-';
+
+        ptpPanel.replaceChildren(status, title, list, hint);
+      }
+
+      async function refreshPtpDiagnostic() {
+        refreshPtpButton.disabled = true;
+        try {
+          const [capabilityResponse, feasibilityResponse, wpdResponse] = await Promise.all([
+            fetch('/api/sony-ptp/capabilities'),
+            fetch('/api/sony-ptp/native-feasibility'),
+            fetch('/api/sony-ptp/wpd-probe')
+          ]);
+          if (!capabilityResponse.ok) {
+            throw new Error(`Capability HTTP ${capabilityResponse.status}`);
+          }
+          if (!feasibilityResponse.ok) {
+            throw new Error(`Feasibility HTTP ${feasibilityResponse.status}`);
+          }
+          if (!wpdResponse.ok) {
+            throw new Error(`WPD HTTP ${wpdResponse.status}`);
+          }
+          renderPtpDiagnostic(await capabilityResponse.json());
+          const feasibility = await feasibilityResponse.json();
+          const wpd = await wpdResponse.json();
+          nativeFeasibility.textContent = `Native backend feasibility\n${JSON.stringify({
+            verdict: feasibility.verdict,
+            cameraIdentity: feasibility.cameraIdentity,
+            constraints: feasibility.constraints,
+            recommendedBackendOptions: feasibility.recommendedBackendOptions,
+            wpdProbe: {
+              status: wpd.status,
+              deviceCount: wpd.deviceCount,
+              sonyDeviceCount: wpd.sonyDeviceCount,
+              findings: wpd.findings,
+              nextActions: wpd.nextActions,
+              devices: wpd.devices,
+              deepProbeEndpoint: wpd.devices?.[0]?.deviceId
+                ? `/api/sony-ptp/wpd-deep-probe?deviceId=${encodeURIComponent(wpd.devices[0].deviceId)}`
+                : '/api/sony-ptp/wpd-deep-probe'
+            }
+          }, null, 2)}`;
+        } catch (error) {
+          const errorText = document.createElement('p');
+          errorText.className = 'error-text';
+          errorText.textContent = `Sony/PTP diagnostic failed: ${error instanceof Error ? error.message : String(error)}`;
+          ptpPanel.replaceChildren(errorText);
+        } finally {
+          refreshPtpButton.disabled = false;
+        }
+      }
+
+      function setPtpResult(stationId, className, text) {
+        ptpResults.set(stationId, { className, text });
+      }
+
+      function gphotoActionCard(station) {
+        const article = document.createElement('article');
+        article.className = 'action-card';
+
+        const title = document.createElement('h3');
+        title.textContent = station.label;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = `Capture from Dashboard ${station.label}`;
+
+        const triggerButton = document.createElement('button');
+        triggerButton.type = 'button';
+        triggerButton.textContent = gphotoTriggerStations.has(station.id) ? `Stop Camera Trigger ${station.label}` : `Start Camera Trigger ${station.label}`;
+
+        const result = document.createElement('div');
+        result.className = gphotoResults.get(station.id)?.className || 'result muted';
+        result.textContent = gphotoResults.get(station.id)?.text || 'Untuk trigger dari kamera: klik Start Camera Trigger, lalu tekan shutter fisik di kamera sebanyak yang dibutuhkan.';
+
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          result.className = 'result muted';
+          result.textContent = 'Running setup + gphoto2 capture...';
+          try {
+            const response = await fetch('/api/gphoto/capture', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ stationId: station.id })
+            });
+            const data = await response.json();
+            const text = data.success
+              ? `Captured via ${data.backend}: ${data.filename}`
+              : `${data.error} Setup status: ${data.setupStatus || '-'} Next: ${(data.nextActions || []).join(' ')}`;
+            gphotoResults.set(station.id, { className: data.success ? 'result' : 'result error-text', text });
+          } catch (error) {
+            gphotoResults.set(station.id, { className: 'result error-text', text: `gPhoto capture failed: ${error instanceof Error ? error.message : String(error)}` });
+          } finally {
+            button.disabled = false;
+            result.className = gphotoResults.get(station.id).className;
+            result.textContent = gphotoResults.get(station.id).text;
+          }
+        });
+
+        triggerButton.addEventListener('click', async () => {
+          triggerButton.disabled = true;
+          const running = gphotoTriggerStations.has(station.id);
+          result.className = 'result muted';
+          result.textContent = running ? 'Stopping camera-trigger listener...' : 'Starting camera-trigger listener...';
+          try {
+            const response = await fetch(running ? '/api/gphoto/trigger-listener/stop' : '/api/gphoto/trigger-listener/start', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ stationId: station.id, waitSeconds: 10 })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+              throw new Error(data.error || `HTTP ${response.status}`);
+            }
+            if (running) {
+              gphotoTriggerStations.delete(station.id);
+              gphotoResults.set(station.id, { className: 'result', text: `Camera trigger stopped. Downloaded this run: ${data.state?.downloadedCount ?? '-'}` });
+            } else {
+              gphotoTriggerStations.add(station.id);
+              gphotoResults.set(station.id, { className: 'result', text: 'Camera trigger listener started. Now press the physical shutter on the camera.' });
+            }
+          } catch (error) {
+            gphotoResults.set(station.id, { className: 'result error-text', text: `Camera trigger listener failed: ${error instanceof Error ? error.message : String(error)}` });
+          } finally {
+            triggerButton.disabled = false;
+            result.className = gphotoResults.get(station.id).className;
+            result.textContent = gphotoResults.get(station.id).text;
+            triggerButton.textContent = gphotoTriggerStations.has(station.id) ? `Stop Camera Trigger ${station.label}` : `Start Camera Trigger ${station.label}`;
+          }
+        });
+
+        article.append(title, button, triggerButton, result);
+        return article;
+      }
+
+      async function runGphotoSetup() {
+        setupGphotoButton.disabled = true;
+        gphotoPanel.textContent = 'Running one-click setup: checking WSL, gphoto2, usbipd, and attaching Sony camera...';
+        try {
+          const response = await fetch('/api/gphoto/setup', { method: 'POST' });
+          const data = await response.json();
+          gphotoPanel.textContent = JSON.stringify({
+            status: data.status,
+            summary: data.summary,
+            busId: data.busId,
+            distro: data.distro,
+            nextActions: data.nextActions,
+            steps: data.steps?.map((step) => ({ name: step.name, ok: step.ok, command: step.command, error: step.error, stdout: step.stdout, stderr: step.stderr }))
+          }, null, 2);
+          if (data.status === 'ready') {
+            await refreshGphotoDiagnostic();
+          }
+        } catch (error) {
+          gphotoPanel.textContent = `One-click gPhoto setup failed: ${error instanceof Error ? error.message : String(error)}`;
+        } finally {
+          setupGphotoButton.disabled = false;
+        }
+      }
+
+      async function refreshGphotoDiagnostic() {
+        refreshGphotoButton.disabled = true;
+        try {
+          const response = await fetch('/api/gphoto/diagnostics');
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          const data = await response.json();
+          gphotoPanel.textContent = JSON.stringify({
+            status: data.status,
+            selectedBackend: data.selectedBackend,
+            summary: data.summary,
+            nextActions: data.nextActions,
+            probes: data.probes,
+            autoDetect: data.autoDetect
+          }, null, 2);
+        } catch (error) {
+          gphotoPanel.textContent = `gPhoto diagnostic failed: ${error instanceof Error ? error.message : String(error)}`;
+        } finally {
+          refreshGphotoButton.disabled = false;
+        }
+      }
+
+      function captureActionCard(station) {
+        const article = document.createElement('article');
+        article.className = 'action-card';
+
+        const title = document.createElement('h3');
+        title.textContent = station.label;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = `Capture ${station.label}`;
+        button.disabled = captureInFlightStations.size > 0 || !captureCapabilityAvailable;
+
+        const result = document.createElement('div');
+        result.className = captureResults.get(station.id)?.className || 'result muted';
+        result.textContent = captureResults.get(station.id)?.text || 'Coba trigger kamera langsung via Windows WIA. Jika unavailable, gunakan Import Latest.';
+
+        button.addEventListener('click', async () => {
+          if (captureInFlightStations.size > 0 || !captureCapabilityAvailable) {
+            return;
+          }
+
+          captureInFlightStations.add(station.id);
+          button.disabled = true;
+          setCaptureResult(station.id, 'result muted', 'Capturing via Windows WIA...');
+          result.className = 'result muted';
+          result.textContent = captureResults.get(station.id).text;
+
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 45000);
+          try {
+            const response = await fetch('/api/direct-capture/capture', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ stationId: station.id }),
+              signal: controller.signal
+            });
+            const data = await response.json().catch(() => null);
+            if (!response.ok || !data?.success) {
+              throw new Error(data?.error || `HTTP ${response.status}`);
+            }
+            setCaptureResult(station.id, 'result', `Captured ${data.filename} from ${data.deviceName} to ${data.destinationPath}`);
+          } catch (error) {
+            setCaptureResult(station.id, 'result error-text', `Capture failed: ${error instanceof Error ? error.message : String(error)}`);
+          } finally {
+            clearTimeout(timeoutId);
+            captureInFlightStations.delete(station.id);
+            button.disabled = !captureCapabilityAvailable;
+            result.className = captureResults.get(station.id).className;
+            result.textContent = captureResults.get(station.id).text;
+          }
+        });
+
+        article.append(title, button, result);
+        return article;
+      }
+
+      function renderCaptureCapabilities(data) {
+        const devices = Array.isArray(data.devices) ? data.devices : [];
+        const statusValue = typeof data.status === 'string' ? data.status : 'error';
+        const status = document.createElement('span');
+        status.className = `status ${statusValue}`;
+        status.textContent = statusValue;
+
+        const title = document.createElement('h3');
+        title.textContent = `${data.captureCapableCount || 0} capture-capable WIA device(s)`;
+
+        const list = document.createElement('dl');
+        appendRow(list, 'Platform', data.platform);
+        appendRow(list, 'Supported', data.supported ? 'Yes' : 'No');
+        appendRow(list, 'Last Scan', data.scannedAt || '-');
+        if (data.error) {
+          appendRow(list, 'Error', data.error, 'error-text');
+        }
+
+        captureCapabilityAvailable = (data.captureCapableCount || 0) > 0;
+
+        const hint = document.createElement('p');
+        hint.className = 'hint';
+        hint.textContent = captureCapabilityAvailable
+          ? 'Direct capture mungkin tersedia. Jika tombol Capture gagal, coba USB mode PC Remote/MTP.'
+          : 'Direct capture belum tersedia via Windows WIA. Untuk Sony A6000, coba mode PC Remote/MTP; jika tetap gagal, gunakan Import Latest atau perlu jalur SDK/PTP.';
+
+        const children = [status, title, list, hint];
+        if (devices.length > 0) {
+          const deviceList = document.createElement('ul');
+          deviceList.replaceChildren(...devices.map((device) => {
+            const item = document.createElement('li');
+            const name = document.createElement('strong');
+            name.textContent = device.name || 'Unknown WIA device';
+            const details = document.createElement('div');
+            details.className = 'muted';
+            details.textContent = `Type: ${device.type || '-'} | Can Capture: ${device.canCapture ? 'Yes' : 'No'}`;
+            item.append(name, details);
+            return item;
+          }));
+          children.push(deviceList);
+        }
+        capturePanel.replaceChildren(...children);
+      }
+
+      async function refreshCaptureCapabilities(force = false) {
+        if (captureRefreshInFlight) {
+          return;
+        }
+
+        captureRefreshInFlight = true;
+        refreshCaptureButton.disabled = true;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 12000);
+        try {
+          const response = await fetch(force ? '/api/direct-capture/capabilities?force=1' : '/api/direct-capture/capabilities', {
+            signal: controller.signal
+          });
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          renderCaptureCapabilities(await response.json());
+        } catch (error) {
+          const errorText = document.createElement('p');
+          errorText.className = 'error-text';
+          errorText.textContent = `Capture capability refresh failed: ${error instanceof Error ? error.message : String(error)}`;
+          capturePanel.replaceChildren(errorText);
+        } finally {
+          clearTimeout(timeoutId);
+          captureRefreshInFlight = false;
+          refreshCaptureButton.disabled = false;
+        }
+      }
+
+      function importActionCard(station) {
+        const article = document.createElement('article');
+        article.className = 'action-card';
+
+        const title = document.createElement('h3');
+        title.textContent = station.label;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = `Import Latest to ${station.label}`;
+
+        button.disabled = importInFlightStations.has(station.id);
+
+        const result = document.createElement('div');
+        result.className = importResults.get(station.id)?.className || 'result muted';
+        result.textContent = importResults.get(station.id)?.text || 'Ambil foto di kamera, lalu klik tombol ini untuk copy JPG terbaru ke folder station.';
+
+        button.addEventListener('click', async () => {
+          if (importInFlightStations.has(station.id)) {
+            return;
+          }
+
+          importInFlightStations.add(station.id);
+          button.disabled = true;
+          setImportResult(station.id, 'result muted', 'Importing latest JPG from camera storage...');
+          result.className = 'result muted';
+          result.textContent = importResults.get(station.id).text;
+
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000);
+          try {
+            const response = await fetch('/api/camera-import/latest', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ stationId: station.id }),
+              signal: controller.signal
+            });
+            const data = await response.json().catch(() => null);
+            if (!response.ok || !data?.success) {
+              throw new Error(data?.error || `HTTP ${response.status}`);
+            }
+            setImportResult(station.id, 'result', `Imported ${data.filename} from ${data.sourcePath} to ${data.destinationPath}`);
+          } catch (error) {
+            setImportResult(station.id, 'result error-text', `Import failed: ${error instanceof Error ? error.message : String(error)}`);
+          } finally {
+            clearTimeout(timeoutId);
+            importInFlightStations.delete(station.id);
+            button.disabled = false;
+            result.className = importResults.get(station.id).className;
+            result.textContent = importResults.get(station.id).text;
+          }
+        });
+
+        article.append(title, button, result);
+        return article;
+      }
+
+      function setImportResult(stationId, className, text) {
+        importResults.set(stationId, { className, text });
+      }
+
+      function setCaptureResult(stationId, className, text) {
+        captureResults.set(stationId, { className, text });
+      }
+
+      function stationCard(station) {
+        const article = document.createElement('article');
+        article.className = 'card';
+
+        const title = document.createElement('h2');
+        title.textContent = station.label;
+
+        const status = document.createElement('span');
+        status.className = `status ${station.status}`;
+        status.textContent = station.status;
+
+        const list = document.createElement('dl');
+        const lastFile = station.lastFile;
+        appendRow(list, 'Station ID', station.id);
+        appendRow(list, 'Input Folder', station.inputPath);
+        appendRow(list, 'Accepted Count', String(station.acceptedCount));
+        appendRow(
+          list,
+          'Last File',
+          lastFile ? `${lastFile.filename} (${lastFile.fileSize} bytes)` : '-'
+        );
+        appendRow(list, 'Last Modified', lastFile ? lastFile.modifiedTime : '-');
+        appendRow(list, 'Last Ignored', station.lastIgnored || '-');
+        appendRow(list, 'Last Error', station.lastError || '-', 'error-text');
+
+        article.append(title, status, list);
+        return article;
+      }
+
+      function usbDeviceItem(device) {
+        const item = document.createElement('li');
+        const title = document.createElement('strong');
+        title.textContent = device.friendlyName || device.name || 'Unknown camera-like device';
+        const details = document.createElement('div');
+        details.className = 'muted';
+        const terms = Array.isArray(device.matchedTerms) ? device.matchedTerms.join(', ') : '-';
+        details.textContent = [
+          `Class: ${device.className || '-'}`,
+          `Manufacturer: ${device.manufacturer || '-'}`,
+          `Status: ${device.status || '-'}`,
+          `Present: ${device.present === null ? '-' : device.present ? 'Yes' : 'No'}`,
+          `Source: ${device.source || '-'}`,
+          `Matched: ${terms}`
+        ].join(' | ');
+        item.append(title, details);
+        return item;
+      }
+
+      let usbRefreshInFlight = false;
+
+      function renderUsbDetection(data) {
+        const devices = Array.isArray(data.devices) ? data.devices : [];
+        const detectedCount = Number.isInteger(data.detectedCount) ? data.detectedCount : devices.length;
+        const statusValue = typeof data.status === 'string' ? data.status : 'error';
+
+        const status = document.createElement('span');
+        status.className = `status ${statusValue}`;
+        status.textContent = statusValue;
+
+        const title = document.createElement('h3');
+        title.textContent = `${detectedCount} candidate device(s) detected`;
+
+        const list = document.createElement('dl');
+        appendRow(list, 'Platform', data.platform);
+        appendRow(list, 'Supported', data.supported ? 'Yes' : 'No');
+        appendRow(list, 'Last Scan', data.scannedAt || '-');
+        if (data.error) {
+          appendRow(list, 'Error', data.error, 'error-text');
+        }
+
+        const hint = document.createElement('p');
+        hint.className = 'hint';
+        hint.textContent = detectedCount > 0
+          ? 'USB device terdeteksi oleh Windows. Ini belum berarti kamera sudah siap tether/capture; pastikan output JPG tetap diarahkan ke folder station.'
+          : 'Belum ada kandidat kamera. Cek kabel data USB, kamera menyala, USB Connection mode, driver, dan Device Manager Windows.';
+
+        const children = [status, title, list, hint];
+        if (devices.length > 0) {
+          const deviceList = document.createElement('ul');
+          deviceList.replaceChildren(...devices.map(usbDeviceItem));
+          children.push(deviceList);
+        }
+
+        usbPanel.replaceChildren(...children);
+      }
+
+      async function refreshUsbDetection(force = false) {
+        if (usbRefreshInFlight) {
+          return;
+        }
+
+        usbRefreshInFlight = true;
+        refreshUsbButton.disabled = true;
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 10000);
+          const response = await fetch(force ? '/api/usb-cameras?force=1' : '/api/usb-cameras', {
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          const data = await response.json();
+          renderUsbDetection(data);
+        } catch (error) {
+          const errorText = document.createElement('p');
+          errorText.className = 'error-text';
+          errorText.textContent = `USB detection refresh failed: ${error instanceof Error ? error.message : String(error)}`;
+          usbPanel.replaceChildren(errorText);
+        } finally {
+          usbRefreshInFlight = false;
+          refreshUsbButton.disabled = false;
+        }
+      }
+
+      async function refreshStations() {
+        try {
+          const response = await fetch('/api/stations');
+          const data = await response.json();
+          const stations = Array.isArray(data.stations) ? data.stations : [];
+          cards.replaceChildren(...stations.map(stationCard));
+          ptpActions.replaceChildren(...stations.map(ptpActionCard));
+          gphotoActions.replaceChildren(...stations.map(gphotoActionCard));
+          captureActions.replaceChildren(...stations.map(captureActionCard));
+          importActions.replaceChildren(...stations.map(importActionCard));
+        } catch (error) {
+          const errorText = document.createElement('p');
+          errorText.className = 'error-text';
+          errorText.textContent = `Dashboard refresh failed: ${error.message}`;
+          cards.replaceChildren(errorText);
+        }
+      }
+
+      refreshUsbButton.addEventListener('click', () => refreshUsbDetection(true));
+      refreshPtpButton.addEventListener('click', refreshPtpDiagnostic);
+      setupGphotoButton.addEventListener('click', runGphotoSetup);
+      refreshGphotoButton.addEventListener('click', refreshGphotoDiagnostic);
+      refreshCaptureButton.addEventListener('click', () => refreshCaptureCapabilities(true));
+      refreshUsbDetection();
+      refreshPtpDiagnostic();
+      refreshGphotoDiagnostic();
+      refreshCaptureCapabilities();
+      refreshStations();
+      setInterval(refreshUsbDetection, 5000);
+      setInterval(refreshCaptureCapabilities, 10000);
+      setInterval(refreshStations, 1500);
+    </script>
+  </body>
+</html>
