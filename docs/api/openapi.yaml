@@ -1,0 +1,3283 @@
+openapi: 3.1.0
+info:
+  title: Selfstudio Agent API
+  version: 0.1.0
+  description: Local Go service API for Selfstudio operator dashboard. Auth secrets and service credentials stay server-side in the Go agent environment.
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Get local agent health compatibility endpoint
+      operationId: getHealthCompatibility
+      responses:
+        '200':
+          description: Agent is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /api/health:
+    get:
+      summary: Get local agent health
+      operationId: getHealth
+      responses:
+        '200':
+          description: Agent is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /events:
+    get:
+      summary: Subscribe to local agent server-sent events
+      operationId: subscribeEvents
+      security:
+        - localSessionCookie: []
+      responses:
+        '200':
+          description: SSE stream accepted
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Each `data:` frame is a JSON-encoded EventEnvelope.
+              example: |
+                id: evt_0123456789abcdef0123456789abcdef
+                event: health.updated
+                data: {"event_id":"evt_0123456789abcdef0123456789abcdef","event_type":"health.updated","entity_type":"service","entity_id":"selfstudio-agent","occurred_at":"2026-05-18T10:30:00Z","data":{"status":"ok"}}
+                
+                event: ingestion.recovered
+                data: {"event_id":"evt_recovery","event_type":"ingestion.recovered","entity_type":"ingestion","entity_id":"startup","occurred_at":"2026-05-19T10:30:00Z","data":{"recovered_routed_photos":1,"recovered_quarantine_items":1,"skipped_duplicates":2,"unresolved_conflicts":0,"errors":0}}
+
+                event: processing.recovered
+                data: {"event_id":"evt_processing_recovered","event_type":"processing.recovered","entity_type":"startup","entity_id":"startup","occurred_at":"2026-05-19T10:30:20Z","data":{"verified":2,"resumed":1,"failed":0,"skipped_retry_limit":1,"errors":0}}
+
+                event: upload.recovered
+                data: {"event_id":"evt_upload_recovered","event_type":"upload.recovered","entity_type":"startup","entity_id":"upload","occurred_at":"2026-05-19T10:30:25Z","data":{"recovered_pending":1,"resumed":1,"failed_missing_local":0,"verified_uploaded":2,"unverified_uploaded":0,"requires_cloud_check":0,"errors":0}}
+                # Google Drive recovery event is published only after upload job state is durably saved; payload excludes local paths and credentials.
+
+                event: photo.processing_started
+                data: {"event_id":"evt_started","event_type":"photo.processing_started","entity_type":"photo","entity_id":"photo_0123456789abcdef01234567","occurred_at":"2026-05-19T10:30:30Z","data":{"photo_id":"photo_0123456789abcdef01234567","station_id":"station_1","session_id":"sess_0123456789abcdef01234567","status":"processing","graded_processing_status":"processing"}}
+                # Startup recovery and retries reuse photo.processing_started, photo.processed/photo.processing_failed, and queue.updated with safe IDs only.
+
+                event: photo.processed
+                data: {"event_id":"evt_processed","event_type":"photo.processed","entity_type":"photo","entity_id":"photo_0123456789abcdef01234567","occurred_at":"2026-05-19T10:31:00Z","data":{"photo_id":"photo_0123456789abcdef01234567","station_id":"station_1","session_id":"sess_0123456789abcdef01234567","status":"processed","graded_processing_status":"processed"}}
+
+                event: photo.processing_failed
+                data: {"event_id":"evt_failed","event_type":"photo.processing_failed","entity_type":"photo","entity_id":"photo_0123456789abcdef01234567","occurred_at":"2026-05-19T10:32:00Z","data":{"photo_id":"photo_0123456789abcdef01234567","station_id":"station_1","session_id":"sess_0123456789abcdef01234567","status":"failed","graded_processing_status":"failed"}}
+
+                event: queue.updated
+                data: {"event_id":"evt_queue","event_type":"queue.updated","entity_type":"photo","entity_id":"photo_0123456789abcdef01234567","occurred_at":"2026-05-19T10:32:01Z","data":{"photo_id":"photo_0123456789abcdef01234567","station_id":"station_1","session_id":"sess_0123456789abcdef01234567","graded_processing_status":"failed"}}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/cloud/settings:
+    get:
+      summary: Get safe cloud storage settings metadata
+      security:
+        - localSessionCookie: []
+      responses:
+        '200':
+          description: Safe cloud settings metadata; credentials are never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudSettingsResponse'
+    put:
+      summary: Store Google Drive folder rules and write-only server-side credentials
+      security:
+        - localSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloudSettingsUpdateRequest'
+      responses:
+        '200':
+          description: Settings stored; response excludes credential material.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudSettingsResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+  /api/cloud/settings/check:
+    post:
+      summary: Check server-side Google Drive authorization and folder access
+      security:
+        - localSessionCookie: []
+      responses:
+        '200':
+          description: Cloud connection authorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudSettingsResponse'
+        '400':
+          description: Actionable cloud check failure without secret leakage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+  /api/sessions/{session_id}/cloud-target:
+    get:
+      summary: Get session-level cloud target status
+      description: Returns Google Drive folder target identity for a session when already resolved. Does not upload original or graded JPG files.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Session cloud target status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCloudTargetResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/sessions/{session_id}/cloud-target/resolve:
+    post:
+      summary: Resolve deterministic session-level Google Drive folder target
+      description: Uses folder convention `{yyyy}/{mm}/{dd}/{safe_customer_name}/{safe_order_number}/{station_id}/{session_id}` under the configured Drive root and stores one idempotent Drive folder identity per session. Upload jobs store per-file Drive IDs.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Session cloud target resolved or existing ready target returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCloudTargetResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '409':
+          description: Cloud not configured, unauthorized, target rule invalid, local completion pending, or target save failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sessions/{session_id}/uploads:
+    get:
+      summary: List per-file cloud upload jobs for a session
+      description: Returns upload status for original and graded JPG files, separate from local save/processing status. Payload contains no cloud credentials, tokens, private keys, or raw privileged cloud errors.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Per-session upload status and per-file jobs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionUploadsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/sessions/{session_id}/uploads/start:
+    post:
+      summary: Start background upload for locally completed session JPGs
+      description: Enqueues original and eligible graded JPG uploads into Drive `original`/`graded` subfolders under the resolved session folder. The request path does not perform large blocking uploads. Retry/de-dup use deterministic job identity plus exact Drive parent folder and safe file name, and public responses expose Drive file/folder IDs instead of GCS bucket/object identity.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '202':
+          description: Upload worker accepted jobs for background processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionUploadsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '409':
+          description: UPLOAD_PENDING_LOCAL_COMPLETION, CLOUD_TARGET_NOT_READY, UPLOAD_LOCAL_FILE_MISSING, or UPLOAD_FAILED.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/uploads/{job_id}/retry:
+    post:
+      summary: Retry one failed cloud upload job asynchronously
+      description: Authenticated trusted-origin mutation. Reuses deterministic `(session_id, photo_id, asset_kind)` job_id and the same deterministic Drive parent folder and safe file name; accepted work runs asynchronously. Attempts are capped at 3 total per job. Running/uploaded duplicate clicks return safe no-op metadata instead of starting another upload. Does not upload large files in the request path and does not expose credentials or raw privileged cloud errors.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '202':
+          description: Retry accepted or duplicate-safe no-op represented in returned status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionUploadsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '404':
+          description: UPLOAD_JOB_NOT_FOUND.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: UPLOAD_NOT_RETRYABLE, UPLOAD_LOCAL_FILE_MISSING, UPLOAD_FAILED, or UPLOAD_RETRY_STATE_SAVE_FAILED. UPLOAD_ALREADY_RUNNING and UPLOAD_ALREADY_UPLOADED are returned as 202 duplicate-safe no-op results.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/sessions/{session_id}/uploads/retry:
+    post:
+      summary: Retry all failed/retryable cloud upload jobs for a session asynchronously
+      description: Authenticated trusted-origin mutation. Starts background retry workers only for persisted retryable jobs and never scans output folders freely. Attempts are capped at 3 total per job. Already running/uploaded jobs are not accepted as retry candidates except as safe no-op responses. Startup recovery normalizes stale uploading/retrying jobs as interrupted and recoverable; it never assumes them uploaded after restart.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '202':
+          description: Retry accepted for one or more jobs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionUploadsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '409':
+          description: No retryable jobs or state save failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/cloud/settings/object-key-preview:
+    post:
+      summary: Preview deterministic sanitized Google Drive folder/file path
+      security:
+        - localSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloudObjectKeyPreviewRequest'
+      responses:
+        '200':
+          description: Sanitized object key preview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloudObjectKeyPreviewResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+  /api/auth/login:
+    post:
+      summary: Create a local authenticated operator session
+      operationId: loginLocalOperator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - pin
+              properties:
+                pin:
+                  type: string
+                  description: Local operator PIN/password. Never exposed by the API.
+                  example: change-this-local-pin
+      responses:
+        '200':
+          description: Login accepted and session cookie set
+          headers:
+            Set-Cookie:
+              description: HttpOnly local session cookie
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/InvalidPin'
+        '429':
+          $ref: '#/components/responses/TooManyAttempts'
+        '500':
+          $ref: '#/components/responses/AuthSessionFailed'
+  /api/auth/logout:
+    post:
+      summary: Clear the local authenticated operator session
+      operationId: logoutLocalOperator
+      responses:
+        '200':
+          description: Session cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+  /api/auth/session:
+    get:
+      summary: Get current local operator session state
+      operationId: getLocalOperatorSession
+      responses:
+        '200':
+          description: Current local session state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionResponse'
+  /api/activity:
+    get:
+      summary: Fetch recent safe operator activity log entries
+      operationId: getActivityLog
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - in: query
+          name: action_type
+          schema:
+            type: string
+          example: login.success
+      responses:
+        '200':
+          description: Recent activity log entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivityListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ActivityUnavailable'
+  /api/cameras/gphoto2/discover:
+    post:
+      summary: Safely discover gPhoto2 cameras via native or WSL runtime
+      security:
+        - localSessionCookie: []
+      responses:
+        '200':
+          description: Discovery completed; zero cameras is a safe success with CONNECT_CAMERA action.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GPhoto2DiscoveryResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '503':
+          description: gPhoto2 or WSL unavailable with safe next action.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/stations:
+    get:
+      summary: Fetch the three logical camera stations
+      operationId: getStations
+      security:
+        - localSessionCookie: []
+      responses:
+        '200':
+          description: Station configuration list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StationListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/StationsUnavailable'
+  /api/stations/{station_id}:
+    put:
+      summary: Update one logical camera station
+      operationId: updateStation
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: station_id
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStationRequest'
+      responses:
+        '200':
+          description: Station updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StationResponse'
+        '400':
+          $ref: '#/components/responses/InvalidStationConfig'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '404':
+          $ref: '#/components/responses/StationNotFound'
+        '500':
+          $ref: '#/components/responses/StationsUnavailable'
+  /api/stations/{station_id}/camera-assignment:
+    put:
+      summary: Assign a detected gPhoto2 camera identity to one station
+      security:
+        - localSessionCookie: []
+      parameters:
+        - name: station_id
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CameraAssignmentRequest'
+      responses:
+        '200':
+          description: Assignment saved and persisted with station config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StationResponse'
+        '400':
+          $ref: '#/components/responses/InvalidStationConfig'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '409':
+          description: Camera identity already assigned to another station.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: DUPLICATE_CAMERA_ASSIGNMENT
+                  message: Kamera sudah dipakai station lain.
+                  action: CHOOSE_DIFFERENT_CAMERA
+                  details: {}
+  /api/stations/{station_id}/tether-listener:
+    get:
+      summary: Get sanitized gPhoto2 tether listener status for one station
+      description: Returns listener state plus persisted desired state, auto-restart setting, and bounded recovery summary. Diagnostics are sanitized; absolute paths, raw commands, tokens, and multiline stderr are not exposed. Folder watcher remains the ingestion source of truth.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - name: station_id
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      responses:
+        '200':
+          description: Current listener status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TetherListenerResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/stations/{station_id}/tether-listener/start:
+    post:
+      summary: Start supervised gPhoto2 wait-event/download listener for one station
+      description: Requires persisted camera assignment and writable station input folder. Duplicate start is a safe 200 no-op with already_running=true and sets desired_state=running. No install, driver, USB attach/setup, shell, privileged command, direct ingestion, Drive upload, or file deletion is run.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - name: station_id
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      responses:
+        '200':
+          description: Listener started or already running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TetherListenerResponse'
+        '400':
+          description: Missing assignment, invalid runtime/port, or input folder not writable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing_assignment:
+                  value:
+                    error:
+                      code: CAMERA_ASSIGNMENT_REQUIRED
+                      message: Camera assignment required before starting tether listener.
+                      action: ASSIGN_CAMERA
+                      details: {}
+                unwritable_folder:
+                  value:
+                    error:
+                      code: STATION_INPUT_FOLDER_UNWRITABLE
+                      message: Station input folder is not writable.
+                      action: CHECK_STATION_INPUT_FOLDER
+                      details: {}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+  /api/stations/{station_id}/tether-listener/stop:
+    post:
+      summary: Stop only the station-owned gPhoto2 tether listener process
+      description: Cancels the station listener context and process tracked by the supervisor, sets desired_state=stopped, and cancels pending tether recovery. It does not run global process-kill commands, WSL shutdown, install, driver, USB setup commands, ingestion bypass, Drive upload, or file deletion.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - name: station_id
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      responses:
+        '200':
+          description: Listener stopped or already stopped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TetherListenerResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+  /api/stations/{station_id}/tether-listener/retry:
+    post:
+      summary: Manually retry safe tether listener reconnect for one station
+      description: Authenticated trusted-origin retry sets desired_state=running, respects duplicate-start safety, uses the persisted station assignment/input folder only, and never runs privileged usbipd/install/driver/global-kill actions.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - name: station_id
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      responses:
+        '200':
+          description: Retry attempted or listener already running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TetherListenerResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+  /api/stations/{station_id}/tether-listener/settings:
+    put:
+      summary: Update tether listener non-secret recovery settings
+      description: Updates auto_restart_enabled. Automatic startup/unexpected-exit restart is attempted only when desired_state=running and auto_restart_enabled=true. Default is false.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - name: station_id
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [auto_restart_enabled]
+              properties:
+                auto_restart_enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Settings updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TetherListenerResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+  /api/stations/backup:
+    post:
+      summary: Create station configuration backup
+      operationId: backupStations
+      security:
+        - localSessionCookie: []
+      responses:
+        '200':
+          description: Backup created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StationBackupResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '500':
+          $ref: '#/components/responses/StationConfigUnavailable'
+  /api/stations/restore:
+    post:
+      summary: Restore station configuration backup
+      operationId: restoreStations
+      security:
+        - localSessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StationRestoreRequest'
+      responses:
+        '200':
+          description: Backup restored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StationRestoreResponse'
+        '400':
+          $ref: '#/components/responses/InvalidStationBackup'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/StationRestoreFailed'
+  /api/ingestion/scan:
+    post:
+      summary: Scan station input folders for stable JPG files
+      operationId: runIngestionScan
+      security:
+        - localSessionCookie: []
+      responses:
+        '200':
+          description: Stable JPG scan result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestionScanResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '500':
+          $ref: '#/components/responses/IngestionUnavailable'
+  /api/sessions:
+    get:
+      summary: List sessions for live station cards
+      operationId: listSessions
+      security:
+        - localSessionCookie: []
+      responses:
+        '200':
+          description: Sessions listed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/SessionsUnavailable'
+  /api/sessions/{session_id}:
+    get:
+      summary: Get session detail summary and local output path
+      operationId: getSessionDetail
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session detail returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionDetailResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/SessionNotFound'
+        '500':
+          $ref: '#/components/responses/SessionsUnavailable'
+  /api/stations/{station_id}/quarantine-summary:
+    get:
+      summary: Get station-level quarantine summary for live cards without active session
+      operationId: getStationQuarantineSummary
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: station_id
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      responses:
+        '200':
+          description: Station quarantine summary returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StationQuarantineSummaryResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/StationNotFound'
+  /api/processing/queue:
+    get:
+      summary: Get server-owned processing queue and per-photo status
+      operationId: getProcessingQueue
+      description: Startup recovery verifies persisted original/graded file state before serving queue state. Pending or stale processing jobs with a verified original are resumed asynchronously; failed jobs retry automatically only while `graded_attempt_count` is below 3; failed jobs at the automatic limit remain failed for manual operator retry.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: query
+          name: station_id
+          schema:
+            type: string
+          description: Optional safe station identifier filter.
+        - in: query
+          name: session_id
+          schema:
+            type: string
+          description: Optional safe session identifier filter.
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [not_eligible, pending, processing, processed, failed, retrying]
+          description: Optional queue bucket filter. `processed` is the succeeded state.
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+          description: Optional positive item limit.
+      responses:
+        '200':
+          description: Processing queue summary and latest matching items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcessingQueueResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ReadinessUnavailable'
+  /api/photos/{photo_id}/retry-processing:
+    post:
+      summary: Manually retry failed graded photo processing
+      operationId: retryPhotoProcessing
+      description: Requires an authenticated operator and trusted origin. Retry starts asynchronously from the verified `local_original_path`; ImageMagick/LUT work is not run inside the HTTP request. Automatic retry stops before the fourth total graded attempt; manual retry is explicit operator action and may run after that limit when the original is verified.
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: photo_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Retry accepted and background processing started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetryProcessingResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '404':
+          $ref: '#/components/responses/PhotoNotFound'
+        '409':
+          $ref: '#/components/responses/InvalidRequest'
+        '422':
+          $ref: '#/components/responses/InvalidRequest'
+        '500':
+          $ref: '#/components/responses/ReadinessUnavailable'
+  /api/quarantine:
+    get:
+      summary: List quarantined or assigned photo records for operator review
+      operationId: listQuarantineItems
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [quarantined, assigned]
+            default: quarantined
+        - in: query
+          name: station_id
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            default: 100
+      responses:
+        '200':
+          description: Quarantine review items returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuarantineListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/quarantine/{quarantine_id}/eligible-sessions:
+    get:
+      summary: List backend-validated target sessions for a quarantined photo
+      operationId: listEligibleQuarantineSessions
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: quarantine_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Eligible sessions returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EligibleSessionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/QuarantineNotFound'
+  /api/quarantine/{quarantine_id}/assign:
+    post:
+      summary: Manually assign one quarantined photo to an eligible session
+      operationId: assignQuarantineItem
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: quarantine_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignQuarantineRequest'
+      responses:
+        '200':
+          description: Quarantine assigned and routed photo trace returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssignQuarantineResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '404':
+          $ref: '#/components/responses/QuarantineNotFound'
+        '409':
+          $ref: '#/components/responses/QuarantineAssignmentConflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /api/sessions/{session_id}/end:
+    post:
+      summary: End an active session manually or by timer reason
+      operationId: endSession
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EndSessionRequest'
+      responses:
+        '200':
+          description: Session ended and locked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '400':
+          $ref: '#/components/responses/InvalidSessionRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '404':
+          $ref: '#/components/responses/SessionNotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/SessionsUnavailable'
+  /api/stations/{station_id}/sessions:
+    post:
+      summary: Start one active session for a station
+      operationId: startStationSession
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: station_id
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartSessionRequest'
+      responses:
+        '201':
+          description: Session started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '400':
+          $ref: '#/components/responses/InvalidSessionRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '404':
+          $ref: '#/components/responses/StationNotFound'
+        '409':
+          $ref: '#/components/responses/SessionConflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/SessionsUnavailable'
+  /api/stations/{station_id}/health/refresh:
+    post:
+      summary: Refresh or reconnect station health checks
+      operationId: refreshStationHealth
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: station_id
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      responses:
+        '200':
+          description: Station health refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StationReadinessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '404':
+          $ref: '#/components/responses/StationNotFound'
+        '500':
+          $ref: '#/components/responses/ReadinessCheckFailed'
+  /api/stations/{station_id}/validation/watch-test:
+    post:
+      summary: Run validation-only watch test for station JPG detection
+      operationId: runStationWatchValidation
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: station_id
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatchValidationRequest'
+      responses:
+        '200':
+          description: Validation completed; failed/no-file validation is returned as data with status failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchValidationResponse'
+        '400':
+          $ref: '#/components/responses/InputFolderUnavailable'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '404':
+          $ref: '#/components/responses/StationNotFound'
+        '408':
+          $ref: '#/components/responses/ValidationCancelled'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/ValidationUnavailable'
+  /api/stations/{station_id}/camera-test-capture:
+    post:
+      summary: Run explicit gPhoto2 camera test capture through station input folder
+      description: >-
+        Requires auth and trusted origin. The agent writes one collision-safe JPG to the station input folder,
+        waits for the expected filename through watcher validation semantics, validates non-empty JPEG SOI bytes,
+        and returns validation-only data. It never uploads directly to Drive and never creates photo, session,
+        processing, quarantine, or upload jobs directly. If SELFSTUDIO_CAMERA_READINESS_REQUIRED=true, failed
+        camera readiness can block session start; default is false for safe dev/local setup.
+      operationId: runStationCameraTestCapture
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: station_id
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      responses:
+        '200':
+          description: Camera test capture completed and expected JPG was detected by watcher validation path
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CameraTestCaptureResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '404':
+          $ref: '#/components/responses/StationNotFound'
+        '409':
+          $ref: '#/components/responses/SessionConflict'
+  /api/stations/{station_id}/hardware-smoke-tests:
+    post:
+      summary: Run guided real-hardware gPhoto2 event smoke test
+      description: >-
+        Requires auth and trusted origin. Orchestrates existing camera discovery, tether listener, station input folder,
+        watcher/ingestion/processing state, and optional Google Drive status. It does not delete camera/input/output/quarantine/report/Drive files,
+        does not run privileged usbipd/install/driver/global-kill commands, does not bypass folder watcher ingestion, and returns only safe report fields
+        with basename file names and no raw ports, identity keys, absolute paths, commands, stdout/stderr, or tokens. Hardware pass must be validated manually with a real camera.
+      operationId: runStationHardwareSmokeTest
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: station_id
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HardwareSmokeRequest'
+      responses:
+        '200':
+          description: Smoke completed and report was saved locally.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HardwareSmokeResponse'
+        '202':
+          description: Smoke failed or aborted safely; partial report was saved and returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HardwareSmokeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '404':
+          $ref: '#/components/responses/StationNotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+  /api/stations/{station_id}/readiness:
+    get:
+      summary: Get readiness status for one station
+      operationId: getStationReadiness
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: station_id
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      responses:
+        '200':
+          description: Station readiness status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StationReadinessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/StationNotFound'
+        '500':
+          description: Station store unavailable or readiness check failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                stationsUnavailable:
+                  value:
+                    error:
+                      code: STATIONS_UNAVAILABLE
+                      message: Konfigurasi station belum siap.
+                      action: Restart aplikasi lalu coba lagi.
+                      details: {}
+                readinessCheckFailed:
+                  value:
+                    error:
+                      code: READINESS_CHECK_FAILED
+                      message: Readiness check gagal dijalankan.
+                      action: Coba recheck ulang atau restart aplikasi.
+                      details: {}
+  /api/stations/{station_id}/readiness/check:
+    post:
+      summary: Run readiness check for one station
+      operationId: runStationReadinessCheck
+      security:
+        - localSessionCookie: []
+      parameters:
+        - in: path
+          name: station_id
+          required: true
+          schema:
+            type: string
+            enum: [station_1, station_2, station_3]
+      responses:
+        '200':
+          description: Station readiness check completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StationReadinessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '404':
+          $ref: '#/components/responses/StationNotFound'
+        '500':
+          description: Station store unavailable or readiness check failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                stationsUnavailable:
+                  value:
+                    error:
+                      code: STATIONS_UNAVAILABLE
+                      message: Konfigurasi station belum siap.
+                      action: Restart aplikasi lalu coba lagi.
+                      details: {}
+                readinessCheckFailed:
+                  value:
+                    error:
+                      code: READINESS_CHECK_FAILED
+                      message: Readiness check gagal dijalankan.
+                      action: Coba recheck ulang atau restart aplikasi.
+                      details: {}
+  /api/readiness:
+    get:
+      summary: Get event readiness checklist
+      operationId: getEventReadiness
+      security:
+        - localSessionCookie: []
+      responses:
+        '200':
+          description: Event readiness checklist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventReadinessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ReadinessUnavailable'
+  /api/readiness/check:
+    post:
+      summary: Run event readiness checklist
+      operationId: runEventReadinessCheck
+      security:
+        - localSessionCookie: []
+      responses:
+        '200':
+          description: Event readiness checklist completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventReadinessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '500':
+          $ref: '#/components/responses/ReadinessUnavailable'
+  /api/config/placeholder-action:
+    post:
+      summary: Record a safe config placeholder activity
+      operationId: recordConfigPlaceholderAction
+      security:
+        - localSessionCookie: []
+      responses:
+        '200':
+          description: Placeholder action recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigPlaceholderResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/UntrustedOrigin'
+        '500':
+          $ref: '#/components/responses/ActivityUnavailable'
+components:
+  x-cloud-story-6-1-schemas:
+    CloudSettingsResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/CloudSettings'
+    CloudSettings:
+      type: object
+      description: Safe metadata only. Credential JSON, private key, token, and raw credential path are never returned.
+      required: [provider, drive_root_folder_id, folder_naming_template, credentials_configured, connection_status]
+      properties:
+        provider:
+          type: string
+          enum: [google_drive]
+        drive_root_folder_id:
+          type: string
+        drive_root_folder_name:
+          type: string
+        folder_naming_template:
+          type: string
+          example: "{yyyy}/{mm}/{dd}/{safe_customer_name}/{safe_order_number}/{station_id}/{session_id}"
+        credentials_configured:
+          type: boolean
+        connection_status:
+          type: string
+          enum: [not_configured, checking, authorized, failed]
+        last_checked_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+          description: Sanitized operator-safe error only.
+        last_error_code:
+          type: string
+          enum: [CLOUD_NOT_CONFIGURED, CLOUD_CREDENTIALS_INVALID, DRIVE_FOLDER_UNAVAILABLE, CLOUD_TARGET_RULE_INVALID, CLOUD_CHECK_FAILED]
+        last_error_action:
+          type: string
+          enum: [FIX_CLOUD_CREDENTIALS, FIX_DRIVE_FOLDER, RETRY_CLOUD_CHECK, FIX_CLOUD_TARGET_RULES]
+    CloudSettingsUpdateRequest:
+      type: object
+      description: Credential fields are write-only and handled only by the Go agent.
+      required: [provider, drive_root_folder_id]
+      properties:
+        provider:
+          type: string
+          enum: [google_drive]
+        drive_root_folder_id:
+          type: string
+        drive_root_folder_name:
+          type: string
+        service_account_json:
+          type: string
+          writeOnly: true
+          description: Optional write-only service account JSON. Never returned or logged.
+        credential_file_path:
+          type: string
+          writeOnly: true
+          description: Optional server-local path consumed only by the Go agent. Never returned to browsers.
+    CloudObjectKeyPreviewRequest:
+      type: object
+      required: [file_name]
+      properties:
+        target_root_prefix: { type: string }
+        customer_name: { type: string }
+        order_number: { type: string }
+        station_id: { type: string }
+        session_id: { type: string }
+        asset_kind:
+          type: string
+          enum: [original, graded]
+        file_name: { type: string }
+    CloudObjectKeyPreviewResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [object_key, template]
+          properties:
+            object_key:
+              type: string
+              description: Sanitized deterministic Drive-safe virtual path preview; never starts with slash and rejects traversal.
+            template:
+              type: string
+    CloudStatusUpdatedEvent:
+      type: object
+      description: SSE event `cloud.status_updated` with safe metadata only.
+      properties:
+        provider: { type: string, enum: [google_drive] }
+        drive_root_folder_id: { type: string }
+        drive_root_folder_name: { type: string }
+        credentials_configured: { type: boolean }
+        connection_status: { type: string, enum: [not_configured, checking, authorized, failed] }
+        last_checked_at: { type: string, format: date-time }
+        last_error_code: { type: string }
+        last_error_action: { type: string }
+  securitySchemes:
+    localSessionCookie:
+      type: apiKey
+      in: cookie
+      name: selfstudio_session
+  responses:
+    UnsupportedMediaType:
+      description: Request Content-Type is not application/json
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InvalidRequest:
+      description: Login request body is invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InvalidPin:
+      description: PIN/password is invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyAttempts:
+      description: Too many invalid PIN/password attempts
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    AuthSessionFailed:
+      description: The local session could not be created
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ActivityUnavailable:
+      description: Activity log store is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    StationsUnavailable:
+      description: Station configuration store is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InputFolderUnavailable:
+      description: Station input folder is missing or unreadable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ValidationCancelled:
+      description: Watch validation was cancelled before completion
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ValidationUnavailable:
+      description: Watch validation service is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    StationConfigUnavailable:
+      description: Station configuration local storage is unavailable or backup failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    StationRestoreFailed:
+      description: Station restore failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InvalidStationBackup:
+      description: Station backup file or restore request is invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InvalidSessionRequest:
+      description: Session start request is invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    SessionConflict:
+      description: Session cannot start because one is already active or readiness blocks start
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    IngestionUnavailable:
+      description: Ingestion scan failed or scanner is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    SessionNotFound:
+      description: Session was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    QuarantineNotFound:
+      description: Quarantine item was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    QuarantineAssignmentConflict:
+      description: Quarantine assignment is not allowed, conflicts with an existing route, or targets an ineligible session
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    SessionsUnavailable:
+      description: Session service or persistence is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ReadinessCheckFailed:
+      description: Station readiness or health refresh failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ReadinessUnavailable:
+      description: Event readiness checklist is unavailable or failed to compute
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            unavailable:
+              value:
+                error:
+                  code: READINESS_UNAVAILABLE
+                  message: Event readiness belum siap.
+                  action: Restart aplikasi lalu coba lagi.
+                  details: {}
+            failed:
+              value:
+                error:
+                  code: READINESS_CHECK_FAILED
+                  message: Event readiness check gagal dijalankan.
+                  action: Coba recheck ulang atau restart aplikasi.
+                  details: {}
+    InvalidStationConfig:
+      description: Station configuration payload is invalid. Duplicate folders use code `DUPLICATE_INPUT_FOLDER`; required/unsafe fields use code `INVALID_STATION_CONFIG`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    StationNotFound:
+      description: Requested station does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PhotoNotFound:
+      description: Requested photo does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UntrustedOrigin:
+      description: Request origin is not trusted for cookie-authenticated mutation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Local operator session is missing or invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: UNAUTHORIZED
+              message: Sesi operator tidak aktif.
+              action: Login ulang dengan PIN/password operator.
+              details: {}
+  schemas:
+    CloudSettingsResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/CloudSettings'
+    CloudSettings:
+      type: object
+      description: Safe metadata only. Credential JSON, private key, token, and raw credential path are never returned.
+      required: [provider, drive_root_folder_id, folder_naming_template, credentials_configured, connection_status]
+      properties:
+        provider: { type: string, enum: [google_drive] }
+        drive_root_folder_id: { type: string }
+        drive_root_folder_name: { type: string }
+        folder_naming_template:
+          type: string
+          example: "{yyyy}/{mm}/{dd}/{safe_customer_name}/{safe_order_number}/{station_id}/{session_id}"
+        credentials_configured: { type: boolean }
+        connection_status: { type: string, enum: [not_configured, checking, authorized, failed] }
+        last_checked_at: { type: string, format: date-time }
+        last_error: { type: string, description: Sanitized operator-safe error only. }
+        last_error_code: { type: string }
+        last_error_action: { type: string }
+    CloudSettingsUpdateRequest:
+      type: object
+      description: Credential fields are write-only and handled only by the Go agent.
+      required: [provider, drive_root_folder_id]
+      properties:
+        provider: { type: string, enum: [google_drive] }
+        drive_root_folder_id: { type: string }
+        drive_root_folder_name: { type: string }
+        service_account_json:
+          type: string
+          writeOnly: true
+          description: Optional write-only service account JSON. Never returned or logged.
+        credential_file_path:
+          type: string
+          writeOnly: true
+          description: Optional server-local path consumed only by the Go agent. Never returned to browsers.
+    CloudObjectKeyPreviewRequest:
+      type: object
+      required: [file_name]
+      properties:
+        target_root_prefix: { type: string }
+        customer_name: { type: string }
+        order_number: { type: string }
+        station_id: { type: string }
+        session_id: { type: string }
+        asset_kind: { type: string, enum: [original, graded] }
+        file_name: { type: string }
+    CloudObjectKeyPreviewResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [object_key, template]
+          properties:
+            object_key: { type: string, description: Sanitized deterministic Drive-safe virtual path preview; never starts with slash and rejects traversal. }
+            template: { type: string }
+    CloudStatusUpdatedEvent:
+      type: object
+      description: SSE event `cloud.status_updated` with safe metadata only.
+      properties:
+        provider: { type: string, enum: [google_drive] }
+        drive_root_folder_id: { type: string }
+        drive_root_folder_name: { type: string }
+        credentials_configured: { type: boolean }
+        connection_status: { type: string, enum: [not_configured, checking, authorized, failed] }
+        last_checked_at: { type: string, format: date-time }
+        last_error_code: { type: string }
+        last_error_action: { type: string }
+    DataResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          description: Endpoint-specific success payload.
+    HealthResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          required:
+            - service
+            - status
+            - database
+            - worker
+            - disk
+          properties:
+            service:
+              type: string
+              example: selfstudio-agent
+            status:
+              $ref: '#/components/schemas/HealthStatusValue'
+            database:
+              $ref: '#/components/schemas/HealthComponentStatus'
+            worker:
+              $ref: '#/components/schemas/HealthComponentStatus'
+            disk:
+              $ref: '#/components/schemas/HealthComponentStatus'
+    HealthStatusValue:
+      type: string
+      enum:
+        - ok
+        - warning
+        - error
+        - placeholder
+        - unknown
+      example: ok
+    HealthComponentStatus:
+      type: object
+      required:
+        - status
+        - label
+        - action
+      properties:
+        status:
+          $ref: '#/components/schemas/HealthStatusValue'
+        label:
+          type: string
+          example: Database belum dikonfigurasi
+        action:
+          type: string
+          example: Konfigurasi Supabase pada story database berikutnya.
+    AuthSessionResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          required:
+            - authenticated
+          properties:
+            authenticated:
+              type: boolean
+              example: true
+    StationListResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          required:
+            - stations
+          properties:
+            stations:
+              type: array
+              minItems: 3
+              maxItems: 3
+              items:
+                $ref: '#/components/schemas/Station'
+    StationResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          required:
+            - station
+          properties:
+            station:
+              $ref: '#/components/schemas/Station'
+    Station:
+      type: object
+      required:
+        - station_id
+        - name
+        - device_identifier
+        - input_folder
+        - background_name
+        - default_lut_path
+        - output_rule
+      properties:
+        station_id:
+          type: string
+          enum: [station_1, station_2, station_3]
+          example: station_1
+        name:
+          type: string
+          example: Main Camera
+        device_identifier:
+          type: string
+          example: Sony A6000 Main
+        input_folder:
+          type: string
+          example: D:\\Selfstudio\\input\\main
+        background_name:
+          type: string
+          example: White
+        default_lut_path:
+          type: string
+          example: D:\\Selfstudio\\luts\\default.cube
+        output_rule:
+          type: string
+          example: '{customer_name}/{order_number}/{station_id}'
+        camera_assignment:
+          $ref: '#/components/schemas/CameraAssignment'
+    DetectedGPhoto2Camera:
+      type: object
+      required: [identity_key, name, port, transport, runtime, connected, detected_at]
+      properties:
+        identity_key:
+          type: string
+          example: wsl|usb:001,004|sony_alpha_a6000
+        name:
+          type: string
+          example: Sony Alpha-A6000
+        model:
+          type: string
+        port:
+          type: string
+          example: usb:001,004
+        device_path:
+          type: string
+        bus_id:
+          type: string
+        transport:
+          type: string
+          enum: [usb, ptp, unknown]
+        runtime:
+          type: string
+          enum: [native_windows, wsl, unknown]
+        connected:
+          type: boolean
+        diagnostics:
+          type: array
+          items:
+            type: string
+        detected_at:
+          type: string
+          format: date-time
+    GPhoto2DiscoveryResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [status, action, runtime, cameras, diagnostics, scanned_at]
+          properties:
+            status:
+              type: string
+              enum: [ready, no_cameras, gphoto2_missing, wsl_missing, usbipd_check_needed, error]
+            action:
+              type: string
+              enum: [NONE, INSTALL_GPHOTO2, CHECK_WSL, CHECK_USBIPD, CONNECT_CAMERA, RETRY_CAMERA_DISCOVERY, CHECK_CAMERA_USB_MODE]
+            runtime:
+              type: string
+              enum: [native_windows, wsl, unknown]
+            cameras:
+              type: array
+              items:
+                $ref: '#/components/schemas/DetectedGPhoto2Camera'
+            diagnostics:
+              type: array
+              items:
+                type: string
+            scanned_at:
+              type: string
+              format: date-time
+    CameraAssignment:
+      type: object
+      required: [identity_key, camera_name, port, runtime, assigned_at, connected]
+      properties:
+        identity_key:
+          type: string
+        camera_name:
+          type: string
+        port:
+          type: string
+        runtime:
+          type: string
+          enum: [native_windows, wsl, unknown]
+        assigned_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        connected:
+          type: boolean
+    CameraAssignmentRequest:
+      type: object
+      required: [identity_key, camera_name, port, runtime, connected]
+      properties:
+        identity_key:
+          type: string
+        camera_name:
+          type: string
+        port:
+          type: string
+        runtime:
+          type: string
+        connected:
+          type: boolean
+    HardwareSmokeRequest:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [local_only, drive_optional, drive_verify]
+          default: local_only
+        stop_on_failure:
+          type: boolean
+          default: true
+        timeout_ms:
+          type: integer
+          minimum: 1000
+        allow_active_session:
+          type: boolean
+          default: false
+        restore_previous_listener_state:
+          type: boolean
+          default: false
+    HardwareSmokeResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [report]
+          properties:
+            report:
+              $ref: '#/components/schemas/HardwareSmokeReport'
+    HardwareSmokeReport:
+      type: object
+      required: [report_id, started_at, overall_status, mode, stop_on_failure, station_id, station_name, camera, steps, summary, next_action]
+      properties:
+        report_id:
+          type: string
+        report_file:
+          type: string
+          description: Safe local report file name only, not an absolute path.
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        overall_status:
+          type: string
+          enum: [passed, failed, warning, aborted]
+        mode:
+          type: string
+          enum: [local_only, drive_optional, drive_verify]
+        stop_on_failure:
+          type: boolean
+        station_id:
+          type: string
+        station_name:
+          type: string
+        camera:
+          $ref: '#/components/schemas/SafeSmokeCamera'
+        session_id:
+          type: string
+        file_name:
+          type: string
+          description: Basename only.
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/HardwareSmokeStep'
+        summary:
+          $ref: '#/components/schemas/HardwareSmokeSummary'
+        next_action:
+          type: string
+    SafeSmokeCamera:
+      type: object
+      required: [camera_name, camera_id, assigned, connected]
+      properties:
+        camera_name:
+          type: string
+        camera_id:
+          type: string
+          description: Safe opaque summary, never raw identity_key or raw gPhoto2 port.
+        assigned:
+          type: boolean
+        connected:
+          type: boolean
+    HardwareSmokeStep:
+      type: object
+      required: [step_key, status, started_at, duration_ms, message]
+      properties:
+        step_key:
+          type: string
+          enum: [station_config_loaded, camera_assignment_verified, gphoto2_discovery, camera_connected_verified, listener_started_or_running, operator_physical_shutter_prompted, downloaded_file_detected_in_input_folder, ingestion_verified, local_original_verified, graded_processing_verified, drive_upload_verified_or_skipped, report_saved]
+        status:
+          type: string
+          enum: [pending, running, passed, failed, skipped, warning]
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+        station_id:
+          type: string
+        file_name:
+          type: string
+        count:
+          type: integer
+        result:
+          type: string
+        error_code:
+          type: string
+        error_action:
+          type: string
+          enum: [ASSIGN_CAMERA, INSTALL_GPHOTO2, CHECK_WSL, CHECK_USBIPD, CONNECT_CAMERA, CHECK_CAMERA_USB_MODE, RETRY_TETHER_LISTENER, PRESS_SHUTTER_OR_CHECK_CAMERA, CHECK_WATCHER, CONFIGURE_DRIVE_OPTIONAL, RETRY_PROCESSING, CHECK_LUT]
+        message:
+          type: string
+          description: Sanitized operator-safe message; never raw stdout/stderr, command, absolute path, token, identity key, or privileged command output.
+    HardwareSmokeSummary:
+      type: object
+      properties:
+        ingestion_count:
+          type: integer
+        ingestion_result:
+          type: string
+        local_original_result:
+          type: string
+        local_original_file:
+          type: string
+        graded_processing_result:
+          type: string
+        graded_file:
+          type: string
+        drive_status:
+          type: string
+          enum: [skipped, not_configured, pending, uploaded, failed]
+        drive_required:
+          type: boolean
+        duration_ms:
+          type: integer
+        failure_code:
+          type: string
+        failure_action:
+          type: string
+    TetherListenerResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [listener, settings, recovery]
+          properties:
+            listener:
+              $ref: '#/components/schemas/TetherListener'
+            settings:
+              $ref: '#/components/schemas/TetherListenerSettings'
+            recovery:
+              $ref: '#/components/schemas/TetherRecoveryStatus'
+    TetherListenerSettings:
+      type: object
+      required: [station_id, desired_state, auto_restart_enabled, updated_at]
+      properties:
+        station_id:
+          type: string
+          enum: [station_1, station_2, station_3]
+        desired_state:
+          type: string
+          enum: [running, stopped]
+          description: Persisted operator intent; unexpected process exit does not change running to stopped.
+        auto_restart_enabled:
+          type: boolean
+          description: Defaults false. Auto recovery starts only when true and desired_state is running.
+        last_started_at:
+          type: string
+          format: date-time
+        last_stopped_at:
+          type: string
+          format: date-time
+        last_recovery_attempt_at:
+          type: string
+          format: date-time
+        recovery_attempt_count:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+    TetherRecoveryStatus:
+      type: object
+      required: [station_id, status, attempt_count, message, updated_at]
+      properties:
+        station_id:
+          type: string
+          enum: [station_1, station_2, station_3]
+        status:
+          type: string
+          enum: [idle, scheduled, attempting, succeeded, failed, paused]
+        attempt_count:
+          type: integer
+        next_attempt_at:
+          type: string
+          format: date-time
+        last_error_code:
+          type: string
+        last_error_action:
+          type: string
+          enum: [ASSIGN_CAMERA, CHECK_STATION_INPUT_FOLDER, INSTALL_GPHOTO2, CHECK_WSL, CHECK_USBIPD, CONNECT_CAMERA, CHECK_CAMERA_USB_MODE, START_TETHER_LISTENER, STOP_TETHER_LISTENER, RETRY_TETHER_LISTENER]
+        message:
+          type: string
+          description: Sanitized safe summary only; no raw shell output, commands, path, port identity, token, or privileged command output.
+        updated_at:
+          type: string
+          format: date-time
+    TetherListener:
+      type: object
+      required: [station_id, status, message]
+      properties:
+        station_id:
+          type: string
+          enum: [station_1, station_2, station_3]
+        status:
+          type: string
+          enum: [stopped, starting, running, stopping, error]
+        runtime:
+          type: string
+          enum: [native_windows, wsl, unknown]
+        camera_name:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        stopped_at:
+          type: string
+          format: date-time
+        last_capture_at:
+          type: string
+          format: date-time
+        last_downloaded_file_name:
+          type: string
+          description: Basename only; absolute path is never exposed.
+        last_error_code:
+          type: string
+        last_error_action:
+          type: string
+          enum: [ASSIGN_CAMERA, CHECK_STATION_INPUT_FOLDER, INSTALL_GPHOTO2, CHECK_WSL, CHECK_USBIPD, CONNECT_CAMERA, CHECK_CAMERA_USB_MODE, START_TETHER_LISTENER, STOP_TETHER_LISTENER, RETRY_TETHER_LISTENER]
+        message:
+          type: string
+          description: Sanitized operator-safe diagnostic; no raw stdout/stderr, command line, credentials, or absolute paths.
+        already_running:
+          type: boolean
+          description: Present on duplicate start no-op.
+    UpdateStationRequest:
+      type: object
+      required:
+        - name
+        - device_identifier
+        - input_folder
+        - background_name
+        - default_lut_path
+        - output_rule
+      properties:
+        name:
+          type: string
+        device_identifier:
+          type: string
+        input_folder:
+          type: string
+        background_name:
+          type: string
+        default_lut_path:
+          type: string
+        output_rule:
+          type: string
+    EventReadinessResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          required:
+            - readiness
+          properties:
+            readiness:
+              $ref: '#/components/schemas/EventReadiness'
+      example:
+        data:
+          readiness:
+            status: warning
+            label: Event belum sepenuhnya terverifikasi otomatis
+            action: Konfirmasi item warning/placeholder sebelum event.
+            checked_at: '2026-05-18T10:30:00Z'
+            session_start_available: false
+            session_start_action: Session start belum tersedia sampai story session control selesai dan required readiness aman.
+            items:
+              - category: stations
+                item_key: station_1
+                status: warning
+                label: Station 1 butuh verifikasi device
+                action: Pastikan kamera/tether software menulis JPG ke input folder.
+              - category: cloud
+                item_key: google_drive
+                status: placeholder
+                label: Google Drive belum dicek otomatis
+                action: Google Drive upload akan divalidasi di Epic 6.
+    EventReadiness:
+      type: object
+      required:
+        - status
+        - label
+        - action
+        - checked_at
+        - session_start_available
+        - session_start_action
+        - items
+      properties:
+        status:
+          $ref: '#/components/schemas/EventReadinessStatus'
+        label:
+          type: string
+        action:
+          type: string
+        checked_at:
+          type: string
+          format: date-time
+        session_start_available:
+          type: boolean
+        session_start_action:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventReadinessItem'
+    EventReadinessItem:
+      type: object
+      required:
+        - category
+        - item_key
+        - status
+        - label
+        - action
+      properties:
+        category:
+          type: string
+          enum: [stations, storage, cloud, operator]
+        item_key:
+          type: string
+        status:
+          $ref: '#/components/schemas/EventReadinessStatus'
+        label:
+          type: string
+        action:
+          type: string
+    EventReadinessStatus:
+      type: string
+      enum: [ready, warning, failed, unknown, placeholder]
+    WatchValidationRequest:
+      type: object
+      properties:
+        timeout_ms:
+          type: integer
+          minimum: 1000
+          maximum: 15000
+          default: 5000
+        stability_ms:
+          type: integer
+          minimum: 200
+          maximum: 3000
+          default: 500
+    WatchValidationResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [validation]
+          properties:
+            validation:
+              $ref: '#/components/schemas/WatchValidation'
+    WatchValidation:
+      type: object
+      required: [station_id, status, label, action, source_path, detected_at, stable_at, validated_at, validation_only]
+      properties:
+        station_id:
+          type: string
+          enum: [station_1, station_2, station_3]
+        status:
+          type: string
+          enum: [ready, running, success, warning, failed]
+        label:
+          type: string
+        action:
+          type: string
+        source_path:
+          type: string
+          nullable: true
+          description: Internal/local source path used by the agent. Operator UI must render only a sanitized basename or safe file label, never the raw absolute path.
+        detected_at:
+          type: string
+          format: date-time
+          nullable: true
+        stable_at:
+          type: string
+          format: date-time
+          nullable: true
+        validated_at:
+          type: string
+          format: date-time
+        validation_only:
+          type: boolean
+          example: true
+    StationBackupResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [backup]
+          properties:
+            backup:
+              type: object
+              required: [filename, created_at, station_count]
+              properties:
+                filename:
+                  type: string
+                  example: stations-20260518-103000.json
+                created_at:
+                  type: string
+                  format: date-time
+                station_count:
+                  type: integer
+                  example: 3
+    StationRestoreRequest:
+      type: object
+      required: [filename]
+      properties:
+        filename:
+          type: string
+          example: stations-20260518-103000.json
+    StationRestoreResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [restored, station_count]
+          properties:
+            restored:
+              type: boolean
+            station_count:
+              type: integer
+              example: 3
+    EndSessionRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          enum: [manual, timer]
+          example: manual
+    StartSessionRequest:
+      type: object
+      required: [customer_name, order_number, timer_seconds]
+      properties:
+        customer_name:
+          type: string
+          example: Customer A
+        order_number:
+          type: string
+          example: ORD-001
+        timer_seconds:
+          type: integer
+          minimum: 60
+          maximum: 86400
+          example: 900
+    IngestionScanResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [photos, routed_photos, quarantined_photos, errors]
+          properties:
+            photos:
+              type: array
+              items:
+                $ref: '#/components/schemas/DetectedPhoto'
+            routed_photos:
+              type: array
+              description: Server-owned successful routing results for detected photos. Frontend must not decide active-session ownership.
+              items:
+                $ref: '#/components/schemas/PhotoRouteResult'
+            quarantined_photos:
+              type: array
+              description: Durable quarantine records for stable JPGs that must not be assigned to a session.
+              items:
+                $ref: '#/components/schemas/QuarantinedPhoto'
+            errors:
+              type: array
+              items:
+                $ref: '#/components/schemas/StationScanError'
+    DetectedPhoto:
+      type: object
+      required: [station_id, source_path, size_bytes, detected_at, stable_at, status]
+      properties:
+        station_id:
+          type: string
+        source_path:
+          type: string
+        size_bytes:
+          type: integer
+        detected_at:
+          type: string
+          format: date-time
+        stable_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [detected]
+    PhotoRouteResult:
+      type: object
+      required: [station_id, source_path, source_size_bytes, detected_at, stable_at, status, duplicate]
+      properties:
+        photo_id:
+          type: string
+          example: photo_0123456789abcdef01234567
+        station_id:
+          type: string
+        session_id:
+          type: string
+        source_path:
+          type: string
+        source_size_bytes:
+          type: integer
+        detected_at:
+          type: string
+          format: date-time
+        stable_at:
+          type: string
+          format: date-time
+        routed_at:
+          type: string
+          format: date-time
+        quarantined_at:
+          type: string
+          format: date-time
+        reason:
+          type: string
+          enum: [no_active_session, late_photo]
+        status:
+          type: string
+          enum: [routed, quarantined, unassigned_pending_quarantine]
+        local_original_path:
+          type: string
+          description: Verified local original JPG path after original-save success.
+        original_save_status:
+          type: string
+          enum: [pending, saving, saved_original, failed]
+        last_error:
+          type: string
+          description: Safe actionable original-save error when failed.
+        attempt_count:
+          type: integer
+        original_save_started_at:
+          type: string
+          format: date-time
+        original_saved_at:
+          type: string
+          format: date-time
+        processing_status:
+          type: string
+          enum: [not_eligible, eligible]
+          description: Graded/LUT work is not eligible until original_save_status is saved_original.
+        local_graded_path:
+          type: string
+          description: Verified local graded JPG path after LUT processing success.
+        graded_processing_status:
+          type: string
+          enum: [not_eligible, pending, processing, processed, failed]
+        graded_last_error:
+          type: string
+          description: Safe actionable graded-processing error such as LUT_UNREADABLE or LUT_PROCESSOR_UNAVAILABLE.
+        graded_attempt_count:
+          type: integer
+        graded_processing_started_at:
+          type: string
+          format: date-time
+        graded_processed_at:
+          type: string
+          format: date-time
+        lut_snapshot_path:
+          type: string
+          description: Session snapshot .cube LUT path used for traceability.
+        duplicate:
+          type: boolean
+    QuarantinedPhoto:
+      allOf:
+        - $ref: '#/components/schemas/PhotoRouteResult'
+        - type: object
+          required: [quarantine_id, quarantined_at, reason]
+          properties:
+            quarantine_id:
+              type: string
+              example: quar_0123456789abcdef01234567
+            related_session_id:
+              type: string
+              description: Last/related session when determinable, usually late_photo context.
+            reason:
+              type: string
+              enum: [no_active_session, late_photo]
+            status:
+              type: string
+              enum: [quarantined, assigned]
+            assigned_session_id:
+              type: string
+            assigned_photo_id:
+              type: string
+            assigned_at:
+              type: string
+              format: date-time
+    RetryProcessingResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [photo, retry_started]
+          properties:
+            photo:
+              $ref: '#/components/schemas/RoutedPhoto'
+            retry_started:
+              type: boolean
+              description: True when the duplicate-safe in-memory guard accepted this manual retry.
+    ProcessingQueueResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/ProcessingQueueData'
+    ProcessingQueueData:
+      type: object
+      required: [summary, items]
+      properties:
+        summary:
+          $ref: '#/components/schemas/ProcessingQueueSummary'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProcessingQueueItem'
+    ProcessingQueueSummary:
+      type: object
+      required: [total, not_eligible, pending, processing, processed, failed, retrying]
+      properties:
+        total:
+          type: integer
+        not_eligible:
+          type: integer
+        pending:
+          type: integer
+        processing:
+          type: integer
+        processed:
+          type: integer
+          description: Existing persisted `processed` value, displayed as succeeded by UI.
+        failed:
+          type: integer
+        retrying:
+          type: integer
+          description: Future-compatible bucket for Story 5.4 retry policy; may be 0.
+        last_updated_at:
+          type: string
+          format: date-time
+        current_job:
+          $ref: '#/components/schemas/ProcessingQueueItem'
+    ProcessingQueueItem:
+      type: object
+      required: [photo_id, station_id, session_id, source_path, original_save_status, processing_status, graded_processing_status, graded_attempt_count, last_updated_at]
+      properties:
+        photo_id:
+          type: string
+        station_id:
+          type: string
+        session_id:
+          type: string
+        source_path:
+          type: string
+        local_original_path:
+          type: string
+        local_graded_path:
+          type: string
+        original_save_status:
+          type: string
+          enum: [pending, saving, saved_original, failed]
+        processing_status:
+          type: string
+          enum: [not_eligible, eligible]
+        graded_processing_status:
+          type: string
+          enum: [not_eligible, pending, processing, processed, failed]
+        graded_last_error:
+          type: string
+        graded_attempt_count:
+          type: integer
+        graded_processing_started_at:
+          type: string
+          format: date-time
+        graded_processed_at:
+          type: string
+          format: date-time
+        last_updated_at:
+          type: string
+          format: date-time
+    QuarantineListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/QuarantinedPhoto'
+    EligibleSessionsResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [quarantine_id, sessions]
+          properties:
+            quarantine_id:
+              type: string
+            sessions:
+              type: array
+              items:
+                $ref: '#/components/schemas/EligibleSession'
+    EligibleSession:
+      type: object
+      required: [session_id, station_id, status, customer_name, order_number, eligible, requires_confirmation, eligibility_reason]
+      properties:
+        session_id:
+          type: string
+        station_id:
+          type: string
+        status:
+          type: string
+          enum: [active, locked]
+        customer_name:
+          type: string
+        order_number:
+          type: string
+        eligible:
+          type: boolean
+          description: Always backend-computed; frontend must not infer eligibility.
+        requires_confirmation:
+          type: boolean
+          description: True for manual recovery assignment flows.
+        eligibility_reason:
+          type: string
+          enum: [same_station_manual_recovery, related_locked_late_photo_recovery]
+    AssignQuarantineRequest:
+      type: object
+      required: [session_id]
+      properties:
+        session_id:
+          type: string
+    AssignQuarantineResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [quarantine, photo]
+          properties:
+            quarantine:
+              $ref: '#/components/schemas/QuarantinedPhoto'
+            photo:
+              $ref: '#/components/schemas/RoutedPhoto'
+    RoutedPhoto:
+      allOf:
+        - $ref: '#/components/schemas/PhotoRouteResult'
+        - type: object
+          required: [photo_id, session_id, routed_at, original_save_status, attempt_count, processing_status, graded_processing_status, graded_attempt_count]
+    StationScanError:
+      type: object
+      required: [station_id, code, message]
+      properties:
+        station_id:
+          type: string
+        code:
+          type: string
+        message:
+          type: string
+    SessionDetailResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [session, summary, photos]
+          properties:
+            session:
+              $ref: '#/components/schemas/Session'
+            summary:
+              $ref: '#/components/schemas/SessionSummary'
+            photos:
+              type: array
+              description: Recent routed photos for operator troubleshooting, including source_path and verified local_original_path traceability.
+              items:
+                $ref: '#/components/schemas/RoutedPhoto'
+    StationQuarantineSummaryResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [summary]
+          properties:
+            summary:
+              $ref: '#/components/schemas/StationQuarantineSummary'
+    StationQuarantineSummary:
+      type: object
+      required: [station_id, station_quarantine_count]
+      properties:
+        station_id:
+          type: string
+          enum: [station_1, station_2, station_3]
+        station_quarantine_count:
+          type: integer
+          description: Open/unassigned quarantine count for this station, excluding assigned records.
+          example: 1
+        latest_quarantine_reason:
+          type: string
+          enum: [no_active_session, late_photo]
+          description: Latest station quarantine reason category when available.
+    SessionSummary:
+      type: object
+      required: [local_output_folder, photo_count, failures, quarantine_count, station_quarantine_count, upload_status, drive_target_status, drive_target_identity, drive_session_folder_id, drive_folder_path, drive_root_folder_id, drive_root_folder_name, drive_last_error_code, drive_last_error_action]
+      properties:
+        local_output_folder:
+          type: string
+        photo_count:
+          type: integer
+          example: 0
+        failures:
+          type: integer
+          example: 0
+        quarantine_count:
+          type: integer
+          description: Quarantine count related to this session.
+          example: 0
+        station_quarantine_count:
+          type: integer
+          description: Total quarantine count for the station, including no-active-session context.
+          example: 1
+        latest_quarantine_reason:
+          type: string
+          enum: [no_active_session, late_photo]
+          description: Latest station quarantine reason category when available.
+        upload_status:
+          $ref: '#/components/schemas/SessionUploadStatus'
+        drive_target_status:
+          type: string
+          enum: [pending, resolving, ready, failed]
+          description: Google Drive folder target status, separate from upload/local processing status.
+        drive_target_identity:
+          type: string
+          description: Stable Drive target identity; equals final session folder ID when ready.
+        drive_session_folder_id:
+          type: string
+          description: Final Google Drive session folder ID.
+        drive_folder_path:
+          type: string
+          description: Deterministic display/debug Drive folder path.
+        drive_root_folder_id:
+          type: string
+        drive_root_folder_name:
+          type: string
+        drive_last_error_code:
+          type: string
+        drive_last_error_action:
+          type: string
+    SessionUploadStatus:
+      type: string
+      enum: [not_configured, target_pending, pending, uploading, uploaded, partial_failed, failed, pending_local_completion]
+      description: Aggregate per-session cloud file upload status, separate from local save/processing status.
+    FileUploadJob:
+      type: object
+      required: [job_id, session_id, station_id, photo_id, asset_kind, status, attempt_count, created_at, updated_at]
+      description: Per-file Google Drive upload job API DTO. Does not contain credential material, tokens, service account JSON, private keys, credential paths, raw privileged Drive errors, or full local filesystem paths. Drive identity is represented by drive_folder_id and drive_file_id; legacy bucket/object fields may be omitted or compatibility-only.
+      properties:
+        job_id: { type: string }
+        session_id: { type: string }
+        station_id: { type: string }
+        photo_id: { type: string }
+        asset_kind:
+          type: string
+          enum: [original, graded]
+        local_file_name:
+          type: string
+          description: Safe basename-only local file reference; full local filesystem paths are never exposed.
+        bucket_name: { type: string, description: Legacy compatibility field; not the primary Drive identity. }
+        object_key:
+          type: string
+          description: Legacy/virtual compatibility path; not the primary Drive identity.
+        drive_folder_id:
+          type: string
+          description: Google Drive parent folder ID used for the file upload (`original` or `graded` subfolder).
+        drive_file_id:
+          type: string
+          description: Google Drive file ID returned by the upload.
+        remote_identity: { type: string, description: Mirrors or contains the Drive file ID after upload. }
+        status:
+          type: string
+          enum: [pending, uploading, retrying, retry_scheduled, uploaded, failed, not_eligible]
+        attempt_count: { type: integer }
+        max_attempts: { type: integer, example: 3 }
+        retry_after: { type: integer, description: Seconds until next automatic retry attempt. }
+        next_retry_at: { type: string, format: date-time }
+        last_attempt_at: { type: string, format: date-time }
+        dedupe_key: { type: string, description: Safe deterministic identity matching job_id. }
+        remote_generation: { type: integer, format: int64 }
+        remote_metageneration: { type: integer, format: int64 }
+        remote_etag: { type: string }
+        last_error_code: { type: string, enum: [UPLOAD_JOB_NOT_FOUND, UPLOAD_NOT_RETRYABLE, UPLOAD_ALREADY_RUNNING, UPLOAD_ALREADY_UPLOADED, UPLOAD_LOCAL_FILE_MISSING, UPLOAD_RETRY_STATE_SAVE_FAILED, UPLOAD_FAILED, DRIVE_UPLOAD_FAILED, DRIVE_UPLOAD_UNAUTHORIZED, DRIVE_FOLDER_UNAVAILABLE, UPLOAD_CONFLICT, UPLOAD_OBJECT_CHECK_NEEDED, UPLOAD_REMOTE_CHECK_NEEDED] }
+        last_error_action: { type: string, enum: [RETRY_CLOUD_UPLOAD, RETRY_DRIVE_UPLOAD, CHECK_LOCAL_OUTPUT, CHECK_CLOUD_OBJECT, CHECK_DRIVE_FILE, RESOLVE_CLOUD_TARGET, FIX_DRIVE_CREDENTIALS, FIX_DRIVE_FOLDER] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        uploaded_at: { type: string, format: date-time }
+    SessionUploadsResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [session_id, upload_status, jobs]
+          properties:
+            session_id: { type: string }
+            upload_status:
+              $ref: '#/components/schemas/SessionUploadStatus'
+            session_upload_status:
+              $ref: '#/components/schemas/SessionUploadStatus'
+              description: Compatibility alias returned by retry endpoints.
+            accepted:
+              type: boolean
+              description: Present on retry responses; true means one or more background retry workers were started.
+            noop_reason:
+              type: string
+              enum: [UPLOAD_ALREADY_RUNNING, UPLOAD_ALREADY_UPLOADED, UPLOAD_NOT_RETRYABLE, UPLOAD_LOCAL_FILE_MISSING]
+              description: Present on retry no-op responses.
+            jobs:
+              type: array
+              items:
+                $ref: '#/components/schemas/FileUploadJob'
+    SessionCloudTargetResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [cloud_target]
+          properties:
+            cloud_target:
+              $ref: '#/components/schemas/SessionCloudTarget'
+    SessionCloudTarget:
+      type: object
+      required: [session_id, station_id, status]
+      description: Google Drive folder target identity. No service account, token, credential path, local full photo path, original JPG, or graded JPG is exposed/uploaded by Story 6.7.
+      properties:
+        session_id: { type: string }
+        station_id: { type: string }
+        bucket_name: { type: string }
+        target_root_prefix: { type: string }
+        object_prefix:
+          type: string
+          description: Deterministic session prefix: `{target_root_prefix}/{yyyy}/{mm}/{dd}/{safe_customer_name}/{safe_order_number}/{station_id}/{session_id}`.
+        drive_root_folder_id: { type: string }
+        drive_root_folder_name: { type: string }
+        drive_folder_path:
+          type: string
+          description: Deterministic display path `{yyyy}/{mm}/{dd}/{safe_customer_name}/{safe_order_number}/{station_id}/{session_id}`.
+        drive_session_folder_id:
+          type: string
+          description: Final Google Drive session folder ID.
+        drive_folder_chain:
+          type: array
+          items:
+            type: object
+            properties:
+              level: { type: string }
+              name: { type: string }
+              folder_id: { type: string }
+              parent_id: { type: string }
+        remote_identity:
+          type: string
+          description: Stable remote identity; for Google Drive this equals `drive_session_folder_id`.
+        status:
+          type: string
+          enum: [pending, resolving, ready, failed]
+        attempt_count: { type: integer }
+        last_error_code:
+          type: string
+          enum: [CLOUD_NOT_CONFIGURED, CLOUD_NOT_AUTHORIZED, CLOUD_TARGET_RULE_INVALID, CLOUD_PREFIX_RESOLVE_FAILED, CLOUD_TARGET_SAVE_FAILED, CLOUD_PENDING_LOCAL_COMPLETION]
+        last_error_action:
+          type: string
+          enum: [FIX_DRIVE_CREDENTIALS, RETRY_DRIVE_CHECK, FIX_DRIVE_FOLDER_RULES, RETRY_DRIVE_FOLDER, FIX_DRIVE_FOLDER, WAIT_FOR_LOCAL_COMPLETION]
+        last_checked_at: { type: string, format: date-time }
+        resolved_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CloudTargetResolvedEvent:
+      type: object
+      description: SSE event `cloud.target_resolved` / `cloud.target_failed`; safe metadata only.
+      properties:
+        session_id: { type: string }
+        station_id: { type: string }
+        status: { type: string, enum: [ready, failed] }
+        drive_root_folder_id: { type: string }
+        drive_root_folder_name: { type: string }
+        drive_folder_path: { type: string }
+        drive_session_folder_id: { type: string }
+        remote_identity: { type: string }
+        last_error_code: { type: string }
+        last_error_action: { type: string }
+    SessionListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [sessions, recovered]
+          properties:
+            sessions:
+              type: array
+              description: Sessions recovered from durable local state; expired active sessions may be returned as locked after restart-safe recovery.
+              items:
+                $ref: '#/components/schemas/Session'
+            recovered:
+              type: boolean
+              description: True when response reflects backend durable session state recovery.
+    SessionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [session]
+          properties:
+            session:
+              $ref: '#/components/schemas/Session'
+    Session:
+      type: object
+      required: [session_id, station_id, status, customer_name, order_number, timer_seconds, started_at, ends_at, station_snapshot]
+      properties:
+        session_id:
+          type: string
+          example: sess_abc123
+        station_id:
+          type: string
+          example: station_1
+        status:
+          type: string
+          enum: [active, locked]
+          example: active
+        customer_name:
+          type: string
+        order_number:
+          type: string
+        timer_seconds:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
+        station_snapshot:
+          $ref: '#/components/schemas/StationSnapshot'
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+        end_reason:
+          type: string
+          enum: [manual, timer]
+          nullable: true
+    StationSnapshot:
+      type: object
+      required: [station_name, background_name, default_lut_path, input_folder, output_rule, output_folder, device_identifier]
+      properties:
+        station_name:
+          type: string
+        background_name:
+          type: string
+        default_lut_path:
+          type: string
+        input_folder:
+          type: string
+        output_rule:
+          type: string
+        output_folder:
+          type: string
+        device_identifier:
+          type: string
+    StationReadinessResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          required:
+            - readiness
+          properties:
+            readiness:
+              $ref: '#/components/schemas/StationReadiness'
+      example:
+        data:
+          readiness:
+            station_id: station_1
+            status: warning
+            label: Station butuh verifikasi operator
+            action: Pastikan device/tether aktif sebelum event.
+            checked_at: '2026-05-18T10:30:00Z'
+            checks:
+              - check_key: input_folder
+                status: ready
+                label: Input folder bisa dibaca
+                action: Tidak ada aksi diperlukan.
+              - check_key: output_folder
+                status: ready
+                label: Output folder sesuai rule bisa ditulis
+                action: Tidak ada aksi diperlukan.
+              - check_key: default_lut
+                status: ready
+                label: File LUT ditemukan dan bisa dibaca
+                action: Tidak ada aksi diperlukan.
+              - check_key: device
+                status: unknown
+                label: Device identifier belum diverifikasi otomatis
+                action: Pastikan kamera/tether software menulis JPG ke input folder.
+    StationReadiness:
+      type: object
+      required:
+        - station_id
+        - status
+        - label
+        - action
+        - checked_at
+        - checks
+      properties:
+        station_id:
+          type: string
+          enum: [station_1, station_2, station_3]
+        status:
+          $ref: '#/components/schemas/ReadinessStatus'
+        label:
+          type: string
+        action:
+          type: string
+        checked_at:
+          type: string
+          format: date-time
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReadinessCheck'
+    ReadinessCheck:
+      type: object
+      required:
+        - check_key
+        - status
+        - label
+        - action
+      properties:
+        check_key:
+          type: string
+          description: >-
+            Existing keys remain present: input_folder, output_folder, default_lut, device. Camera-aware
+            readiness may add gphoto2_availability, camera_assignment, camera_connected, tether_listener,
+            input_folder_writable, and camera_test_capture. Camera failures are warning by default and become
+            failed when SELFSTUDIO_CAMERA_READINESS_REQUIRED=true.
+          enum: [input_folder, output_folder, default_lut, device, gphoto2_availability, camera_assignment, camera_connected, tether_listener, input_folder_writable, camera_test_capture]
+        status:
+          $ref: '#/components/schemas/ReadinessStatus'
+        label:
+          type: string
+        action:
+          type: string
+    ReadinessStatus:
+      type: string
+      enum: [ready, warning, failed, unknown]
+    CameraTestCaptureResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [test_capture]
+          properties:
+            test_capture:
+              $ref: '#/components/schemas/CameraTestCaptureResult'
+    CameraTestCaptureResult:
+      type: object
+      required: [station_id, status, label, action, validation_only]
+      properties:
+        station_id:
+          type: string
+          enum: [station_1, station_2, station_3]
+        status:
+          type: string
+          enum: [not_run, running, success, warning, failed]
+        label:
+          type: string
+          description: Sanitized operator-facing result; no raw stdout/stderr, command, credentials, or absolute paths.
+        action:
+          type: string
+          enum: [INSTALL_GPHOTO2, CHECK_WSL, CHECK_USBIPD, CONNECT_CAMERA, CHECK_CAMERA_USB_MODE, ASSIGN_CAMERA, START_TETHER_LISTENER, STOP_TETHER_LISTENER, CHECK_STATION_INPUT_FOLDER, RETRY_CAMERA_DISCOVERY, RETRY_TEST_CAPTURE, RECHECK_CAMERA_READINESS, NONE]
+        file_name:
+          type: string
+          description: Safe basename only, never an absolute local/WSL path.
+        captured_at:
+          type: string
+          format: date-time
+        detected_at:
+          type: string
+          format: date-time
+        stable_at:
+          type: string
+          format: date-time
+        validation_only:
+          type: boolean
+          description: True because pipeline source of truth remains the local folder watcher; Drive upload is not invoked directly.
+    ActivityListResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          required:
+            - entries
+          properties:
+            entries:
+              type: array
+              items:
+                $ref: '#/components/schemas/ActivityEntry'
+    ActivityEntry:
+      type: object
+      required:
+        - id
+        - occurred_at
+        - action_type
+        - result
+        - message
+        - station_id
+        - session_id
+      properties:
+        id:
+          type: string
+          example: act_0123456789abcdef0123456789abcdef
+        occurred_at:
+          type: string
+          format: date-time
+        action_type:
+          type: string
+          example: login.success
+        result:
+          type: string
+          enum:
+            - success
+            - failure
+        message:
+          type: string
+          example: Operator login berhasil.
+        station_id:
+          type:
+            - string
+            - 'null'
+        session_id:
+          type:
+            - string
+            - 'null'
+    ConfigPlaceholderResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: object
+          required:
+            - recorded
+          properties:
+            recorded:
+              type: boolean
+              example: true
+    EventEnvelope:
+      type: object
+      required:
+        - event_id
+        - event_type
+        - entity_type
+        - entity_id
+        - occurred_at
+        - data
+      properties:
+        event_id:
+          type: string
+          example: evt_0123456789abcdef0123456789abcdef
+        event_type:
+          type: string
+          example: health.updated
+        entity_type:
+          type: string
+          example: service
+        entity_id:
+          type: string
+          example: selfstudio-agent
+        occurred_at:
+          type: string
+          format: date-time
+          example: '2026-05-18T10:30:00Z'
+        data:
+          type: object
+          additionalProperties: true
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+            - action
+            - details
+          properties:
+            code:
+              type: string
+              example: UNAUTHORIZED
+            message:
+              type: string
+              example: Sesi operator tidak aktif.
+            action:
+              type: string
+              example: Login ulang dengan PIN/password operator.
+            details:
+              type: object
+              additionalProperties: true

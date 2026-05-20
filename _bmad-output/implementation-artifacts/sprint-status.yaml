@@ -1,0 +1,102 @@
+# generated: 2026-05-18 17:27:51
+# last_updated: 2026-05-18
+# project: selfstudio
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: D:/_Project/selfstudio/_bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-05-18 17:27:51
+last_updated: 2026-05-20
+project: selfstudio
+project_key: NOKEY
+tracking_system: file-system
+story_location: D:/_Project/selfstudio/_bmad-output/implementation-artifacts
+
+development_status:
+  epic-1: done
+  1-1-create-windows-local-app-skeleton: done
+  1-2-add-local-pin-gate: done
+  1-3-establish-api-error-and-sse-contract-foundation: done
+  1-4-create-health-dashboard-shell: done
+  1-5-record-and-view-operator-activity-log-foundation: done
+  epic-1-retrospective: done
+  epic-2: done
+  2-1-configure-three-camera-stations: done
+  2-2-validate-station-paths-luts-and-device-readiness: done
+  2-3-run-test-capture-watch-validation: done  # alias: implemented as 2-5-run-test-capture-watch-validation
+  2-5-run-test-capture-watch-validation: done
+  2-4-refresh-and-reconnect-station-health: done  # alias: implemented as 2-6-refresh-and-reconnect-station-health
+  2-6-refresh-and-reconnect-station-health: done
+  2-5-backup-and-restore-station-configuration: done  # alias: implemented as 2-4-save-and-restore-station-configuration
+  2-6-run-event-readiness-checklist: done  # alias: implemented as 2-3-create-event-readiness-checklist
+  epic-2-retrospective: done
+  epic-3: done
+  3-1-start-one-active-session-per-station: done
+  3-2-display-three-station-live-cards: done
+  3-3-end-sessions-manually-or-by-timer: done
+  3-4-recover-live-session-state-after-restart: done
+  3-5-show-session-detail-summary-and-local-folder-access: done
+  epic-3-retrospective: done
+  epic-4: done
+  4-1-watch-station-input-folders-for-stable-jpgs: done
+  4-2-route-valid-jpgs-to-active-sessions: done
+  4-3-quarantine-unassigned-and-late-photos: done
+  4-4-review-and-assign-quarantined-photos: done
+  4-5-recover-pending-ingestion-and-quarantine-state: done
+  epic-4-retrospective: done
+  epic-5: done
+  5-1-save-original-jpg-before-processing: done
+  5-2-apply-station-session-lut-to-create-graded-jpg: done
+  5-3-track-processing-queue-and-photo-status: done
+  5-4-retry-failed-photo-processing: done
+  5-5-recover-pending-processing-jobs-after-restart: done
+  epic-5-retrospective: done
+  epic-6: in-progress  # correct-course approved 2026-05-20: replace GCS with Google Drive provider
+  6-1-configure-cloud-storage-credentials-and-target-rules: done  # superseded by Drive corrective stories
+  6-2-create-cloud-folder-object-structure-per-session: done  # superseded by Drive corrective stories
+  6-3-upload-original-and-graded-jpgs-after-local-completion: done  # superseded by Drive corrective stories
+  6-4-track-retry-and-de-duplicate-cloud-uploads: done  # superseded by Drive corrective stories
+  6-5-recover-pending-cloud-upload-jobs-after-restart: done  # superseded by Drive corrective stories
+  6-6-configure-google-drive-credentials-and-folder-rules: done
+  6-7-create-google-drive-folder-structure-per-session: done
+  6-8-upload-original-and-graded-jpgs-to-google-drive: done
+  6-9-track-retry-and-de-duplicate-google-drive-uploads: done
+  6-10-recover-pending-google-drive-upload-jobs-after-restart: done
+  epic-6-retrospective: done  # prior GCS retrospective; run addendum after Drive correction
+  epic-7: done
+  7-1-detect-and-assign-gphoto2-cameras-to-stations: done
+  7-2-supervise-gphoto2-tether-listener-per-station: done
+  7-3-add-camera-readiness-checks-and-test-capture-validation: done
+  7-4-show-live-camera-tether-status-and-controls-in-dashboard: done
+  7-5-recover-and-reconnect-gphoto2-tethering-during-event: done
+  7-6-run-real-hardware-gphoto2-event-smoke-test: done
+  epic-7-retrospective: done

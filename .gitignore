@@ -14,6 +14,8 @@ node_modules/
 # Environment and secrets
 .env
 .env.*
+!.env.example
+!**/.env.example
 *.pem
 *.key
 *.p12
@@ -29,6 +31,23 @@ Thumbs.db
 dist/
 build/
 coverage/
+.next/
+apps/**/.next/
+*.tsbuildinfo
+
+# Selfstudio runtime outputs
+local-data/input/**/*.jpg
+local-data/input/**/*.jpeg
+local-data/input/**/*.arw
+local-data/input/**/*.raw
+local-data/input/**/*.cr2
+local-data/input/**/*.nef
+local-data/output/**
+local-data/quarantine/**
+local-data/logs/**
+local-data/tmp/**
+!local-data/**/
+!local-data/**/.gitkeep
 
 # Logs
 *.log
@@ -39,3 +58,16 @@ yarn-error.log*
 # Local setup overrides
 setup-selfstudio-local.ps1
 setup-selfstudio-local.bat
+
+# Smoke/test runtime artifacts
+local-data/**/*.log
+local-data/**/*.pid
+local-data/**/*cookie*.txt
+local-data/**/*results*/**
+local-data/**/*smoke*/**
+local-data/tools/**
+local-data/**/output/**
+local-data/*queue.json
+local-data/*readiness.json
+local-data/*scan.json
+local-data/**/detail_*.json
